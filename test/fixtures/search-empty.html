@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="mk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Пребарување | CompanyWall</title>
+  <link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+<header class="site-header">
+  <nav>
+    <a href="/">Почетна</a>
+    <a href="/prebaruvanje">Пребарување</a>
+    <a href="/registracija">Регистрација</a>
+  </nav>
+</header>
+<main class="container">
+  <h1>Резултати од пребарување</h1>
+  <aside class="filters">
+    <form method="get" action="/prebaruvanje">
+      <label>Приход од</label><input name="dsm[0].From" value="5000000">
+      <label>Приход до</label><input name="dsm[0].To" value="400000000">
+      <label>Регион</label><select name="area"><option value="">Сите</option></select>
+      <label>Дејност</label><select name="at"><option value="">Сите</option></select>
+      <button type="submit">Пребарај</button>
+    </form>
+  </aside>
+  <section class="results">
+    <p class="empty-state">Нема пронајдени резултати за зададените критериуми.</p>
+    <p>Обидете се да ги проширите критериумите за пребарување.</p>
+  </section>
+</main>
+<footer class="site-footer">
+  <p>CompanyWall — <a href="mailto:info@companywall.com.mk">info@companywall.com.mk</a> — 02/3112-233</p>
+</footer>
+</body>
+</html>
