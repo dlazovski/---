@@ -178,13 +178,56 @@ for (const [label, wf] of Object.entries(WORKFLOWS)) {
 
 // --- main-workflow specifics -------------------------------------------------
 
-test('[main] the Google Sheets node appends to the configured sheet', () => {
+test('[main] the sheet is read before the run and appended to after', () => {
   const wf = WORKFLOWS.main;
   const sheets = wf.nodes.filter((n) => n.type === 'n8n-nodes-base.googleSheets');
-  assert.strictEqual(sheets.length, 1);
-  assert.strictEqual(sheets[0].parameters.operation, 'append');
-  assert.match(sheets[0].parameters.documentId.value, /googleSheetId/);
-  assert.strictEqual(sheets[0].parameters.columns.mappingMode, 'autoMapInputData');
+  assert.strictEqual(sheets.length, 2, 'expected exactly one read node and one append node');
+
+  const read = sheets.find((n) => n.parameters.operation === 'read');
+  const append = sheets.find((n) => n.parameters.operation === 'append');
+  assert.ok(read, 'no Google Sheets read node');
+  assert.ok(append, 'no Google Sheets append node');
+
+  assert.strictEqual(append.parameters.columns.mappingMode, 'autoMapInputData');
+
+  // Reading and appending must target the same tab, or de-duplication is meaningless.
+  assert.strictEqual(read.parameters.documentId.value, append.parameters.documentId.value);
+  assert.strictEqual(read.parameters.sheetName.value, append.parameters.sheetName.value);
+  assert.match(read.parameters.documentId.value, /googleSheetId/);
+
+  // An empty sheet returns no rows; without alwaysOutputData the run never starts.
+  assert.strictEqual(read.alwaysOutputData, true, 'read node must set alwaysOutputData');
+});
+
+test('[main] the sheet read happens before any company is fetched', () => {
+  const wf = WORKFLOWS.main;
+  const fwd = edges(wf);
+  const downstreamOfRead = reachable(fwd, 'Read Existing Sheet');
+  for (const node of wf.nodes) {
+    if (node.type !== 'n8n-nodes-base.httpRequest') continue;
+    assert.ok(
+      downstreamOfRead.has(node.name),
+      node.name + ' can run without the existing sheet having been read — it could re-fetch known companies'
+    );
+  }
+});
+
+test('[main] the revenue band sweep is configured and covers the full range', () => {
+  const cfg = WORKFLOWS.main.nodes.find((n) => n.name === 'Config').parameters.assignments.assignments;
+  const bandCount = cfg.find((a) => a.name === 'revenueBandCount');
+  assert.ok(bandCount, 'Config has no revenueBandCount field');
+  assert.ok(bandCount.value >= 1, 'revenueBandCount must be at least 1');
+
+  const { buildRevenueBands } = require('../src/lib/parsers.js');
+  const from = cfg.find((a) => a.name === 'revenueFrom').value;
+  const to = cfg.find((a) => a.name === 'revenueTo').value;
+  const bands = buildRevenueBands(from, to, bandCount.value);
+
+  assert.strictEqual(bands[0].from, from);
+  assert.strictEqual(bands[bands.length - 1].to, to);
+  for (let i = 1; i < bands.length; i++) {
+    assert.strictEqual(bands[i].from, bands[i - 1].to + 1, 'bands are not contiguous');
+  }
 });
 
 test('[main] the sheet ID is an obvious placeholder, not a stale real ID', () => {

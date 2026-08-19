@@ -70,7 +70,9 @@ instance's credentials.
 
 ### 3. Google Sheets credential
 
-Open **Google Sheets — Append** and select the Google credential.
+Select the Google credential on **both** Google Sheets nodes — **Read Existing Sheet**
+and **Google Sheets — Append**. They must point at the same tab, or de-duplication
+against what you already collected will not work.
 
 ### 4. Point at the sheet
 
@@ -112,15 +114,49 @@ When the run finishes, open **Build Summary** for the run report: rows written, 
 by stage with their URLs, duplicates skipped, and counts of companies with no phone, no
 e-mail, or no owner/manager on the main page.
 
+### Running it again to collect more
+
+The workflow is safe to re-run against the same sheet. **Read Existing Sheet** loads the
+rows already there and seeds the de-duplication set from the `Даночен БРОЈ` column, so a
+second run appends only companies you do not already have — and skips the known ones
+*before* the profile fetch, so they cost nothing.
+
+Two things to check in the summary afterwards:
+
+- `existingCompaniesSeeded` should match the number of rows already in your sheet. If it
+  is `0` while the sheet has rows, the column name does not match — set `sheetEdbColumn`
+  in Config and re-run. A warning is raised for exactly this case, because the alternative
+  is silently duplicating everything.
+- `companiesQueued: 0` with a `note` saying the search is exhausted means every company
+  this filter returns is already in your sheet. Running it again will not help; you need a
+  different filter — a wider revenue range, or a different `balanceYear`.
+
+#### Why the search runs in revenue bands
+
+A single search can only be paged as deep as the site allows, so companies past that depth
+are unreachable no matter how many times you re-run it. `revenueBandCount` (default **8**)
+sweeps the same overall 5,000,000–400,000,000 range in contiguous slices: the union is the
+identical filter, but each slice is short enough to reach its own end.
+
+The slices are geometrically spaced rather than equal-width, because company counts are
+heavily skewed toward the low end of a revenue range — equal-width bands would put almost
+everything in the first slice and defeat the point. The band boundaries are listed in the
+summary under `revenueBands`.
+
+Set `revenueBandCount` to `1` for a single undivided sweep (the original behaviour).
+
 ---
 
 ## How it works
 
 ```
-Config ─ Init State ─┬─► Build Search URL ─ Wait ─ ScrapingBee ─ Parse Results ─ More pages? ─┐
-                     └──────────────────────── loop back ◄───────────────────────────────────┘
-                                                                    │ no more pages
-                                                                    ▼
+Config ─ Read Existing Sheet ─ Init State  (seed seen-ЕДБ, plan revenue bands)
+                                    │
+        ┌───────────────────────────▼──────────────────────────────────────────┐
+        │  Build Search URL ─ Wait ─ ScrapingBee ─ Parse Results ─ More? ──────┤
+        └─────────── next page, or next revenue band ◄────────────────────────-┘
+                                                          │ every band swept
+                                                          ▼
       Dedupe by ЕДБ ─ Loop (1 at a time) ─ Wait ─ ScrapingBee profile ─ Parse Profile
                                                                     │
                                        ┌── nobody listed? ──► Wait ─ ScrapingBee /lica ─ Parse
@@ -159,12 +195,14 @@ Set in the **Config** node.
 | `balanceYear` | `2025` | `bly` — the financial year the filter applies to |
 | `area` / `subarea` / `activityType` | *(empty)* | Empty = nationwide, all industries |
 | `renderJs` | `'false'` | ScrapingBee JS rendering. Only set `'true'` if Step 0 says it's needed |
-| `maxPages` | `60` | Safety cap on search pages |
+| `maxPages` | `60` | Safety cap on search pages, **per band** |
 | `maxCompanies` | `0` | `0` = unlimited; set low for a smoke run |
 | `maxConsecutiveFailures` | `3` | Consecutive search-page failures before giving up |
+| `revenueBandCount` | `8` | Slices to sweep the revenue range in. `1` = one undivided search |
 | `writePartialRows` | `false` | `true` writes search-page fields when a profile fetch fails |
 | `excludePhones` / `excludeEmails` | *(empty)* | Comma-separated values to never write |
 | `googleSheetId` / `googleSheetName` | placeholder / `Sheet1` | Target sheet |
+| `sheetEdbColumn` | `Даночен БРОЈ` | Column read back to skip companies already collected |
 
 ---
 
@@ -175,7 +213,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   78 tests: parser units, end-to-end simulation, structural checks.
+test/                   95 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -185,7 +223,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 78 tests, no network access needed
+npm test        # 95 tests, no network access needed
 npm run check   # both
 ```
 
@@ -195,8 +233,10 @@ npm run check   # both
   duplication, the `Сопственик`/`Управител` block, the `НКЗ` format), plus regressions
   for three bugs found during the build.
 - **End-to-end simulation** (`test/workflow.test.js`) — runs the *actual generated node
-  code* from the built JSON against fixture HTML: pagination and its stop condition, the
-  `/lica` branch, a failed profile fetch being skipped rather than fatal, and the exact
+  code* from the built JSON against fixture HTML, as both a first run and a follow-up run:
+  the band sweep, pagination and its stop conditions, de-duplication against the existing
+  sheet (including an ЕДБ stored as a number, and a mismatched column name), the `/lica`
+  branch, a failed profile fetch being skipped rather than fatal, and the exact
   eight-column output.
 - **Structural checks** — every request preceded by a Wait node, batch size 1, all traffic
   through ScrapingBee, every `$('Node')` reference resolving to a node that actually runs

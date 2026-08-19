@@ -172,6 +172,27 @@ function googleSheetsAppendNode(name, position) {
   };
 }
 
+/**
+ * Reads the rows already in the target sheet, so a follow-up run can skip
+ * companies that were appended by an earlier one.
+ *
+ * alwaysOutputData matters: an empty sheet returns no rows, and without it the
+ * downstream node would be skipped and the whole run would never start.
+ */
+function googleSheetsReadNode(name, position) {
+  return {
+    parameters: {
+      resource: 'sheet',
+      operation: 'read',
+      documentId: { __rl: true, value: `={{ ${CONFIG_REF}.googleSheetId }}`, mode: 'id' },
+      sheetName: { __rl: true, value: `={{ ${CONFIG_REF}.googleSheetName }}`, mode: 'name' },
+      options: {}
+    },
+    id: name, name, type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position,
+    alwaysOutputData: true
+  };
+}
+
 function noOpNode(name, position) {
   return { parameters: {}, id: name, name, type: 'n8n-nodes-base.noOp', typeVersion: 1, position };
 }
@@ -216,7 +237,7 @@ const SEARCH_CONFIG_FIELDS = [
 
 module.exports = {
   loadCode, manualTrigger, setNode, codeNode, waitNode, scrapingBeeNode,
-  ifBooleanNode, splitInBatchesNode, googleSheetsAppendNode, noOpNode,
+  ifBooleanNode, splitInBatchesNode, googleSheetsAppendNode, googleSheetsReadNode, noOpNode,
   stickyNote, buildConnections, SEARCH_CONFIG_FIELDS, ROOT
 };
 

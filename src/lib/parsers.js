@@ -964,3 +964,63 @@ if (typeof module !== 'undefined' && module && module.exports) {
     buildSearchUrl: buildSearchUrl
   };
 }
+
+// ---------------------------------------------------------------------------
+// Revenue band partitioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Split a revenue range into contiguous, non-overlapping sub-ranges whose union
+ * is exactly the original range.
+ *
+ * Why: a single search can only be paged as deep as the site allows. Sweeping the
+ * same overall filter in slices keeps each sub-search short enough to reach its
+ * own end, so companies past any pagination depth cap become reachable.
+ *
+ * Spacing is geometric, not linear, because company counts are heavily skewed
+ * toward the low end of a revenue range — equal-width bands would put almost
+ * everything in the first slice and defeat the point.
+ */
+function buildRevenueBands(from, to, count) {
+  var f = Number(from);
+  var t = Number(to);
+  var n = Math.floor(Number(count) || 1);
+
+  if (!Number.isFinite(f) || !Number.isFinite(t) || t <= f) return [{ from: f, to: t }];
+  if (n <= 1 || f <= 0) return [{ from: f, to: t }];
+
+  var bands = [];
+  var ratio = t / f;
+  var lo = f;
+
+  for (var i = 1; i <= n; i++) {
+    var hi;
+    if (i === n) {
+      hi = t;
+    } else {
+      hi = Math.round(f * Math.pow(ratio, i / n)) - 1;
+      if (hi > t) hi = t;
+    }
+    if (hi < lo) continue;
+    bands.push({ from: lo, to: hi });
+    if (hi >= t) break;
+    lo = hi + 1;
+  }
+
+  return bands.length ? bands : [{ from: f, to: t }];
+}
+
+/**
+ * ЕДБ as it is used for de-duplication: digits only.
+ *
+ * Values read back from Google Sheets may arrive as numbers, or with stray
+ * formatting, so both sides of the comparison are reduced to digits.
+ */
+function normalizeEdb(value) {
+  return String(value === null || value === undefined ? '' : value).replace(/\D/g, '');
+}
+
+if (typeof module !== 'undefined' && module && module.exports) {
+  module.exports.buildRevenueBands = buildRevenueBands;
+  module.exports.normalizeEdb = normalizeEdb;
+}

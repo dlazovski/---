@@ -1,14 +1,24 @@
-// Initialise pagination state and the run-wide counters.
+// @requires-parsers
+// Seed the run: de-duplicate against what is already in the sheet, and split the
+// revenue filter into bands to sweep.
 //
-// Counters and the collected-company list live in workflow static data so the
-// pagination loop does not have to carry a growing array through every item.
-// Everything is reset here, so re-running the workflow always starts clean.
+// Input is the existing sheet's rows (the Read Existing Sheet node runs with
+// alwaysOutputData, so an empty sheet still produces one empty item here).
+// Counters and the collected-company list live in workflow static data, reset
+// here so every run starts clean.
 
-const cfg = $input.first().json;
+const cfg = $('Config').first().json;
+const existingRows = $input.all();
 const sd = $getWorkflowStaticData('global');
 
 sd.stats = {
   startedAt: new Date().toISOString(),
+  existingRowsInSheet: 0,
+  existingEdbSeeded: 0,
+  existingRowsWithUnreadableEdb: 0,
+  alreadyInSheetSkipped: 0,
+  bandsPlanned: 0,
+  bandsCompleted: 0,
   pagesFetched: 0,
   searchRequestFailures: 0,
   rowsParsed: 0,
@@ -28,15 +38,56 @@ sd.stats = {
 };
 sd.collected = [];
 sd.seenKeys = {};
+sd.sheetKeys = {};
+
+// --- de-duplicate against the existing sheet --------------------------------
+const edbColumn = cfg.sheetEdbColumn || 'Даночен БРОЈ';
+
+for (const item of existingRows) {
+  const row = item.json || {};
+  // An empty item from alwaysOutputData is not a row.
+  if (Object.keys(row).length === 0) continue;
+  sd.stats.existingRowsInSheet += 1;
+
+  const edb = normalizeEdb(row[edbColumn]);
+  if (!edb) {
+    sd.stats.existingRowsWithUnreadableEdb += 1;
+    continue;
+  }
+  if (edb.length !== 13) {
+    // Most likely the cell was rendered in scientific notation by Sheets.
+    sd.stats.existingRowsWithUnreadableEdb += 1;
+    sd.stats.warnings.push('existing sheet row has an ЕДБ that is not 13 digits: "' + edb + '"');
+  }
+  if (!sd.seenKeys[edb]) {
+    sd.seenKeys[edb] = true;
+    sd.sheetKeys[edb] = true;
+    sd.stats.existingEdbSeeded += 1;
+  }
+}
+
+if (sd.stats.existingRowsInSheet > 0 && sd.stats.existingEdbSeeded === 0) {
+  sd.stats.warnings.push(
+    'read ' + sd.stats.existingRowsInSheet + ' existing sheet rows but seeded no ЕДБ — check that '
+    + 'the column is named "' + edbColumn + '"; the run would otherwise re-add companies you already have'
+  );
+}
+
+// --- plan the revenue band sweep --------------------------------------------
+const bands = buildRevenueBands(cfg.revenueFrom, cfg.revenueTo, cfg.revenueBandCount);
+sd.bands = bands;
+sd.stats.bandsPlanned = bands.length;
 
 return [{
   json: {
-    ...cfg,
+    bandIndex: 0,
+    band: bands[0],
+    bandCount: bands.length,
     page: Number(cfg.startPage) || 1,
     stop: false,
     stopReason: '',
     previousSignature: '',
     consecutiveFailures: 0,
-    pagesFetched: 0
+    existingEdbSeeded: sd.stats.existingEdbSeeded
   }
 }];
