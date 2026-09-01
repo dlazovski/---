@@ -570,34 +570,78 @@ function extractEdb(source) {
  * CONFIRMED on-page label is "НКЗ" (not "НКД"), value formatted as
  * "27.110 - Производство на ...". Both are accepted, plus "Шифра на дејност".
  */
+/**
+ * Activity code and description.
+ *
+ * CONFIRMED on-page label is "НКЗ" (not "НКД"), value formatted as
+ * "61.100 - Жичени, безжични и сателитски телекомуникациски дејности".
+ *
+ * Codes appear at several levels of the classification — 61.1 (group),
+ * 61.10 (class), 61.100 (sub-class) — so the digit count after the dot varies
+ * and must not be pinned to three. The label is also searched at EVERY
+ * occurrence, not just the first: a filter widget elsewhere on the page can
+ * carry the same word, and matching only the first would read a generic sector
+ * code instead of the company's own.
+ */
 function extractActivity(source) {
   var text = looksLikeHtml(source) ? htmlToText(source) : String(source || '');
-  var labelMatch = text.match(new RegExp(labelBoundary('НКЗ|НКД|Шифра\\s+на\\s+дејност'), 'iu'));
+
   var zones = [];
-  if (labelMatch) zones.push(text.slice(labelMatch.index, labelMatch.index + 500));
+  var labelRe = new RegExp(labelBoundary('НКЗ|НКД|Шифра\\s+на\\s+дејност'), 'giu');
+  var m;
+  while ((m = labelRe.exec(text)) !== null) {
+    zones.push(text.slice(m.index, m.index + 600));
+    if (zones.length >= 8) break;
+  }
   zones.push(text);
 
-  var combinedRe = /(?<!\d)(\d{2}\.\d{2,3})(?!\d)\s*[-–—]\s*(\p{L}[^\n]{1,250})/u;
+  var CODE = '(?<!\\d)(\\d{2}\\.\\d{1,3})(?!\\d)';
+
+  // 1. code and description on one line, separated by a dash or colon.
+  var combinedRe = new RegExp(CODE + '\\s*[-\u2013\u2014:]\\s*(\\p{L}[^\\n]{0,250})', 'u');
   for (var i = 0; i < zones.length; i++) {
-    var m = zones[i].match(combinedRe);
-    if (m) {
-      var desc = normalizeSpace(m[2]);
-      return { code: m[1], description: desc, full: m[1] + ' - ' + desc };
+    var one = zones[i].match(combinedRe);
+    if (one) {
+      var desc = normalizeSpace(one[2]);
+      return { code: one[1], description: desc, full: one[1] + ' - ' + desc, source: i < zones.length - 1 ? 'label zone' : 'whole page' };
     }
   }
 
-  // Code and description split across lines.
+  // 2. code alone on a line, description on the next.
+  var codeOnlyRe = new RegExp('^' + CODE + '$', 'u');
   for (var z = 0; z < zones.length; z++) {
     var lines = zones[z].split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
     for (var k = 0; k < lines.length - 1; k++) {
-      if (!/^\d{2}\.\d{2,3}$/.test(lines[k])) continue;
-      var next = normalizeSpace(lines[k + 1]).replace(/^[-–—\s]+/, '');
+      if (!codeOnlyRe.test(lines[k])) continue;
+      var next = normalizeSpace(lines[k + 1]).replace(/^[-\u2013\u2014\s:]+/, '');
       if (!/^\p{L}/u.test(next) || next.length < 3) continue;
-      return { code: lines[k], description: next, full: lines[k] + ' - ' + next };
+      return { code: lines[k], description: next, full: lines[k] + ' - ' + next, source: 'split lines' };
     }
   }
 
-  return { code: '', description: '', full: '' };
+  // 3. a bare code with no description anywhere near it. Still worth writing —
+  //    the code is the part that identifies the activity.
+  var bareRe = new RegExp(CODE, 'u');
+  for (var b = 0; b < zones.length; b++) {
+    var bare = zones[b].match(bareRe);
+    if (bare) return { code: bare[1], description: '', full: bare[1], source: 'code only' };
+  }
+
+  return { code: '', description: '', full: '', source: 'not found' };
+}
+
+/**
+ * A window of page text around a label, for diagnosing extraction failures.
+ * Returns '' when the label is not on the page at all — itself a useful answer.
+ */
+function captureLabelContext(source, labelAlternation, chars) {
+  var text = looksLikeHtml(source) ? htmlToText(source) : String(source || '');
+  var width = Number(chars) || 400;
+  var re = new RegExp(labelBoundary(labelAlternation), 'iu');
+  var found = text.match(re);
+  if (!found) return '';
+  var from = Math.max(0, found.index - Math.floor(width / 4));
+  return normalizeSpace(text.slice(from, from + width));
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,6 +1194,7 @@ if (typeof module !== 'undefined' && module && module.exports) {
     extractEmbs: extractEmbs,
     extractEdb: extractEdb,
     extractActivity: extractActivity,
+    captureLabelContext: captureLabelContext,
     sliceContactsSection: sliceContactsSection,
     detectBlockedPage: detectBlockedPage,
     normalizeProfilePath: normalizeProfilePath,
@@ -1164,6 +1209,71 @@ if (typeof module !== 'undefined' && module && module.exports) {
     splitSegmentByRevenue: splitSegmentByRevenue,
     describeSegment: describeSegment
   };
+}
+
+// ---------------------------------------------------------------------------
+// Google Sheet column matching
+// ---------------------------------------------------------------------------
+
+/**
+ * Reduce a sheet header to a comparable key.
+ *
+ * The Google Sheets node matches columns by exact header text, so a sheet
+ * spelling its column "Шифра на дејност (НКЗ)" or "Мејл адреса" silently drops
+ * everything written under the canonical name. Parentheticals, spacing and
+ * punctuation are removed, and ј is folded to и so Мејл and Меил compare equal.
+ */
+function normalizeSheetHeader(header) {
+  return String(header === null || header === undefined ? '' : header)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\u0458/g, '\u0438')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/**
+ * Map canonical column names onto the sheet's actual headers.
+ *
+ * Falls back to the canonical name when nothing matches, and reports which ones
+ * did not match so the caller can say so rather than silently losing the value.
+ */
+function matchSheetColumns(canonicalNames, sheetHeaders) {
+  var index = {};
+  (sheetHeaders || []).forEach(function (header) {
+    var key = normalizeSheetHeader(header);
+    if (key && !Object.prototype.hasOwnProperty.call(index, key)) index[key] = header;
+  });
+
+  var keys = Object.keys(index);
+  var map = {};
+  var unmatched = [];
+
+  (canonicalNames || []).forEach(function (name) {
+    var key = normalizeSheetHeader(name);
+
+    if (Object.prototype.hasOwnProperty.call(index, key)) {
+      map[name] = index[key];
+      return;
+    }
+
+    // Prefix match, for headers that add or drop a qualifier. Kept to reasonably
+    // long keys so short names cannot collide with unrelated columns.
+    var hit = null;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k.length < 4 || key.length < 4) continue;
+      if (k.indexOf(key) === 0 || key.indexOf(k) === 0) { hit = k; break; }
+    }
+
+    if (hit) {
+      map[name] = index[hit];
+    } else {
+      map[name] = name;
+      unmatched.push(name);
+    }
+  });
+
+  return { map: map, unmatched: unmatched, headersSeen: (sheetHeaders || []).slice() };
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,5 +1355,7 @@ function normalizeEdb(value) {
 
 if (typeof module !== 'undefined' && module && module.exports) {
   module.exports.buildRevenueBands = buildRevenueBands;
+  module.exports.normalizeSheetHeader = normalizeSheetHeader;
+  module.exports.matchSheetColumns = matchSheetColumns;
   module.exports.normalizeEdb = normalizeEdb;
 }

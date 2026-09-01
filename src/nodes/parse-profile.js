@@ -110,6 +110,29 @@ if (!nkdSkip) {
   if (parsed.needsLica) stats.licaFallbacks += 1;
 }
 
+// When a field comes back empty, keep a window of the real page text around the
+// label it should have been near. An empty cell otherwise gives no clue whether
+// the page lacks the data or the parser missed it; this makes the difference
+// visible in the run summary without another live run.
+const diagnostics = stats.fieldDiagnostics;
+const SAMPLE_LIMIT = Number(cfg.diagnosticSamples) || 5;
+
+function sampleFailure(bucket, labels) {
+  if (!diagnostics[bucket] || diagnostics[bucket].length >= SAMPLE_LIMIT) return;
+  diagnostics[bucket].push({
+    company: company.name || company.edb,
+    url: company.profileUrl,
+    pageContext: captureLabelContext(html, labels, 400) || '(label not present on the page at all)'
+  });
+}
+
+if (!nkdSkip) {
+  if (!parsed.activity) sampleFailure('activity', 'НКЗ|НКД|Шифра\\s+на\\s+дејност');
+  if (!parsed.contactPerson) sampleFailure('contactPerson', 'Управител|Сопственик|Контакт');
+  if (!parsed.phones.length) sampleFailure('phone', 'Телефон|Тел|Контакт');
+  if (!parsed.emails.length) sampleFailure('email', 'Е-пошта|Емаил|Меил|Мејл|Контакт');
+}
+
 return [{
   json: {
     ...base,

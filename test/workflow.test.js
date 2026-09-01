@@ -489,3 +489,90 @@ test('revenue banding: a zero-based range reaches the smallest companies', () =>
   assert.strictEqual(run.summary.segments[0].revenueFrom, 0);
   assert.match(run.requestLog[0], /dsm\[0\]\.From=0&dsm\[0\]\.To=99999/);
 });
+
+// ---------------------------------------------------------------------------
+// Writing under the sheet's own column headers
+//
+// The Google Sheets node matches columns by exact header text. A sheet spelling
+// a column differently gets the row but a blank cell — the loss is invisible
+// from the sheet, which is exactly how it went unnoticed in production.
+// ---------------------------------------------------------------------------
+
+test('sheet columns: rows are written under the headers the sheet actually uses', () => {
+  const run = runWorkflow({
+    existingRows: [{
+      'Клиент': 'ПОСТОЕЧКА ДОО',
+      'Град': 'Скопје',
+      'ЕМБС': '1234567',
+      'Даночен БРОЈ': '4099999999999',
+      'Шифра на дејност (НКЗ)': '61.100 - Х',
+      'Контакт  лице': 'НЕКОЈ',
+      'Контакт телефон': '02/1111-111',
+      'Мејл адреса': 'a@b.mk'
+    }],
+    config: { nkdCodes: '' }
+  });
+
+  assert.ok(run.sheetRows.length > 0, 'no rows were written');
+  const keys = Object.keys(run.sheetRows[0]);
+  assert.ok(keys.includes('Шифра на дејност (НКЗ)'), 'did not adopt the sheet\'s НКЗ header');
+  assert.ok(keys.includes('Мејл адреса'), 'did not adopt the sheet\'s Мејл spelling');
+  assert.ok(keys.includes('Контакт  лице'), 'did not adopt the sheet\'s spacing');
+});
+
+test('sheet columns: the values actually land in those columns', () => {
+  const run = runWorkflow({
+    existingRows: [{
+      'Клиент': 'x', 'Град': 'x', 'ЕМБС': 'x', 'Даночен БРОЈ': '4011111111111',
+      'Шифра на дејност (НКЗ)': 'x', 'Контакт лице': 'x',
+      'Контакт телефон': 'x', 'Мејл адреса': 'x'
+    }],
+    config: { nkdCodes: '' }
+  });
+
+  const row = run.sheetRows.find((r) => r['Клиент'] === 'МАКИТЕЛ ДООЕЛ');
+  assert.ok(row, 'МАКИТЕЛ row missing');
+  assert.strictEqual(row['Шифра на дејност (НКЗ)'],
+    '27.110 - Производство на електромотори, генератори и трансформатори');
+  assert.strictEqual(row['Мејл адреса'], 'kontakt@makitel.com.mk; prodazba@makitel.com.mk');
+  assert.strictEqual(run.summary.sheetColumnsUnmatched.length, 0);
+});
+
+test('sheet columns: a column missing from the sheet is reported, not lost quietly', () => {
+  const run = runWorkflow({
+    existingRows: [{ 'Клиент': 'x', 'Даночен БРОЈ': '4011111111111' }],
+    config: { nkdCodes: '' }
+  });
+
+  assert.ok(run.summary.sheetColumnsUnmatched.includes('Контакт телефон'));
+  assert.match(run.summary.columnMappingWarning || '', /no matching header was found/);
+  // ...and the warning must name what the sheet does have, so it is actionable.
+  assert.match(run.summary.columnMappingWarning, /Клиент/);
+});
+
+test('sheet columns: an empty sheet falls back to canonical names and says so', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
+  assert.deepStrictEqual(run.summary.sheetHeadersSeen, []);
+  assert.ok(Object.keys(run.sheetRows[0]).includes('Шифра на дејност'));
+  assert.ok(run.summary.warnings.some((w) => w.includes('column headers could not be read')));
+});
+
+// ---------------------------------------------------------------------------
+// Diagnosing empty cells
+// ---------------------------------------------------------------------------
+
+test('diagnostics: an empty field captures the page text around its label', () => {
+  // ТЕСТ КОМПАНИЈА has no phone or e-mail on its profile.
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
+  const phoneSamples = run.summary.emptyFieldDiagnostics.phone || [];
+  assert.ok(phoneSamples.length > 0, 'no diagnostic captured for the company with no phone');
+  assert.ok(phoneSamples[0].company, 'diagnostic does not name the company');
+  assert.ok(phoneSamples[0].url, 'diagnostic does not carry the profile URL');
+  assert.ok(typeof phoneSamples[0].pageContext === 'string' && phoneSamples[0].pageContext.length > 0);
+});
+
+test('diagnostics: a field that extracted fine produces no noise', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
+  // Both fixture profiles carry an НКЗ, so nothing should be sampled.
+  assert.deepStrictEqual(run.summary.emptyFieldDiagnostics.activity, []);
+});

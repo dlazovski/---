@@ -56,6 +56,15 @@ const summary = {
   companiesWithNoEmail: stats.noEmail || 0,
   companiesWithNoContactPerson: stats.noContactPerson || 0,
 
+  // How the eight canonical columns were matched onto the sheet's real headers
+  sheetHeadersSeen: stats.sheetHeadersSeen || [],
+  sheetColumnMap: stats.sheetColumnMap || {},
+  sheetColumnsUnmatched: stats.sheetColumnsUnmatched || [],
+
+  // Page context for fields that came back empty, so a blank cell can be
+  // diagnosed without another live run.
+  emptyFieldDiagnostics: stats.fieldDiagnostics || {},
+
   totalFailures: failures.length,
   failuresByStage: failures.reduce((acc, f) => {
     acc[f.stage] = (acc[f.stage] || 0) + 1;
@@ -78,6 +87,16 @@ if (nkdCodes.length > 0 && nkdChecked >= 5 && summary.companiesNotMatchingNkdFil
     + 'the requested НКД code(s) ' + nkdCodes.join(', ') + '. The `at=` search parameter is most likely '
     + 'being ignored by the site, so the search was effectively unfiltered. Verify the parameter with the '
     + 'Step 0 workflow before trusting this run.';
+}
+
+// A value was extracted but had no column to go in — the row lands looking fine
+// and the loss is invisible from the sheet.
+if ((stats.columnsWithDataButNoHeader || []).length > 0) {
+  summary.columnMappingWarning = 'These columns hold data but no matching header was found in the '
+    + 'sheet, so their values were written to a column that may not exist: '
+    + stats.columnsWithDataButNoHeader.join(', ') + '. The sheet\'s headers are: '
+    + ((stats.sheetHeadersSeen || []).join(' | ') || '(none — the sheet returned no rows)')
+    + '. Rename the sheet header to match, and the mapping will pick it up automatically.';
 }
 
 // Companies were provably missed: say so loudly, because the sheet will look

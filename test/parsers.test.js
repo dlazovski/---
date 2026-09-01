@@ -550,3 +550,93 @@ test('buildRevenueBands: bands get wider as revenue grows', () => {
     assert.ok(widths[i] > widths[i - 1], 'band ' + (i + 1) + ' is not wider than the one before it');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Activity codes across classification levels
+//
+// CompanyWall shows НКЗ at group (61.1), class (61.10) and sub-class (61.100)
+// level, so the digit count after the dot varies. Pinning it to three silently
+// blanked the column for every company coded at a shallower level.
+// ---------------------------------------------------------------------------
+
+test('extractActivity: every classification depth is read', () => {
+  const at = (html) => P.extractActivity(html).full;
+  assert.strictEqual(at('<span>НКЗ</span><span>61.100 - Жичени телекомуникации</span>'), '61.100 - Жичени телекомуникации');
+  assert.strictEqual(at('<span>НКЗ</span><span>61.10 - Жичени телекомуникации</span>'), '61.10 - Жичени телекомуникации');
+  assert.strictEqual(at('<span>НКЗ</span><span>61.1 - Телекомуникации</span>'), '61.1 - Телекомуникации');
+});
+
+test('extractActivity: a colon separates code from description just as a dash does', () => {
+  assert.strictEqual(
+    P.extractActivity('<div>Шифра на дејност: 46.900 - Неспецијализирана трговија</div>').full,
+    '46.900 - Неспецијализирана трговија'
+  );
+});
+
+test('extractActivity: an earlier label elsewhere on the page does not win', () => {
+  // A filter widget carrying the word "НКЗ" appears before the company's own
+  // block; matching only the first occurrence read the wrong code.
+  const html = '<nav>Пребарај по НКЗ</nav><main><section>НКЗ 61.900 - Други телекомуникациски дејности</section></main>';
+  assert.strictEqual(P.extractActivity(html).code, '61.900');
+});
+
+test('extractActivity: a bare code with no description is still worth writing', () => {
+  const a = P.extractActivity('<span>НКЗ</span><span>61.20</span>');
+  assert.strictEqual(a.code, '61.20');
+  assert.strictEqual(a.description, '');
+  assert.strictEqual(a.full, '61.20');
+});
+
+test('extractActivity: reports where it found the value, and when it found none', () => {
+  assert.strictEqual(P.extractActivity('<span>НКЗ</span><span>61.100 - Х</span>').source, 'label zone');
+  assert.strictEqual(P.extractActivity('<div>Нема податоци</div>').source, 'not found');
+  assert.strictEqual(P.extractActivity('<div>Нема податоци</div>').full, '');
+});
+
+test('captureLabelContext: returns page text around a label, or says it is absent', () => {
+  const html = '<div>претходно</div><div>НКЗ</div><div>61.100 - Жичени телекомуникации</div>';
+  assert.match(P.captureLabelContext(html, 'НКЗ', 200), /61\.100/);
+  assert.strictEqual(P.captureLabelContext('<div>ништо</div>', 'НКЗ', 200), '');
+});
+
+// ---------------------------------------------------------------------------
+// Sheet column matching
+// ---------------------------------------------------------------------------
+
+test('matchSheetColumns: real-world header spellings all resolve', () => {
+  const canonical = ['Шифра на дејност', 'Меил адреса', 'Контакт лице', 'Клиент'];
+  const sheet = ['Клиент', 'Шифра на дејност (НКЗ)', 'Контакт  лице', 'Мејл адреса'];
+  const { map, unmatched } = P.matchSheetColumns(canonical, sheet);
+
+  assert.strictEqual(map['Шифра на дејност'], 'Шифра на дејност (НКЗ)', 'parenthetical qualifier not matched');
+  assert.strictEqual(map['Меил адреса'], 'Мејл адреса', 'ј / и spelling not matched');
+  assert.strictEqual(map['Контакт лице'], 'Контакт  лице', 'double space not matched');
+  assert.strictEqual(map['Клиент'], 'Клиент');
+  assert.deepStrictEqual(unmatched, []);
+});
+
+test('matchSheetColumns: a genuinely absent column is reported, not guessed at', () => {
+  const { map, unmatched } = P.matchSheetColumns(['Клиент', 'Контакт телефон'], ['Клиент', 'Град']);
+  assert.strictEqual(map['Клиент'], 'Клиент');
+  assert.deepStrictEqual(unmatched, ['Контакт телефон']);
+  assert.strictEqual(map['Контакт телефон'], 'Контакт телефон', 'unmatched columns fall back to the canonical name');
+});
+
+test('matchSheetColumns: unrelated short headers do not collide', () => {
+  const { unmatched } = P.matchSheetColumns(['ЕМБС'], ['ЕДБ', 'Град']);
+  assert.deepStrictEqual(unmatched, ['ЕМБС'], 'ЕМБС must not be matched to ЕДБ');
+});
+
+test('matchSheetColumns: no headers at all falls back to canonical names', () => {
+  const { map, unmatched } = P.matchSheetColumns(['Клиент'], []);
+  assert.strictEqual(map['Клиент'], 'Клиент');
+  assert.deepStrictEqual(unmatched, ['Клиент']);
+});
+
+test('normalizeSheetHeader: folds the differences that actually occur', () => {
+  const n = P.normalizeSheetHeader;
+  assert.strictEqual(n('Шифра на дејност (НКЗ)'), n('Шифра на дејност'));
+  assert.strictEqual(n('Мејл адреса'), n('Меил адреса'));
+  assert.strictEqual(n('Контакт  лице'), n('Контакт лице'));
+  assert.notStrictEqual(n('ЕМБС'), n('ЕДБ'));
+});

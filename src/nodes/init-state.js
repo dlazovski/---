@@ -41,11 +41,17 @@ sd.stats = {
   rowsWritten: 0,
   rowsSkipped: 0,
   failedUrls: [],
-  warnings: []
+  warnings: [],
+  sheetHeadersSeen: [],
+  sheetColumnMap: {},
+  sheetColumnsUnmatched: [],
+  columnsWithDataButNoHeader: [],
+  fieldDiagnostics: { activity: [], contactPerson: [], phone: [], email: [] }
 };
 sd.collected = [];
 sd.seenKeys = {};
 sd.sheetKeys = {};
+sd.sheetHeaders = [];
 
 // --- de-duplicate against the existing sheet --------------------------------
 const edbColumn = cfg.sheetEdbColumn || 'Даночен БРОЈ';
@@ -55,6 +61,10 @@ for (const item of existingRows) {
   // An empty item from alwaysOutputData is not a row.
   if (Object.keys(row).length === 0) continue;
   sd.stats.existingRowsInSheet += 1;
+
+  // The keys of a returned row ARE the sheet's header text, which is the only
+  // way to learn how the columns are actually spelled.
+  if (sd.sheetHeaders.length === 0) sd.sheetHeaders = Object.keys(row);
 
   const edb = normalizeEdb(row[edbColumn]);
   if (!edb) {

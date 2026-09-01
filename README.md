@@ -298,7 +298,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   146 tests: parser units, end-to-end simulation, structural checks.
+test/                   163 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -308,7 +308,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 146 tests, no network access needed
+npm test        # 163 tests, no network access needed
 npm run check   # both
 ```
 
@@ -338,6 +338,36 @@ npm run check   # both
 > valuable follow-up.
 
 ---
+
+## If a column comes out blank
+
+Two different causes, and the summary tells you which:
+
+**1. The sheet's header is spelled differently.** The Google Sheets node matches columns by
+exact header text, so `Шифра на дејност (НКЗ)` or `Мејл адреса` (with **ј**) does not receive
+anything written under the canonical name — the row appears, that one cell is just empty.
+
+The workflow now reads the sheet's real headers from the rows it loads at the start and maps
+onto them automatically, folding parentheticals, extra spaces, and ј/и. Check the summary:
+
+- `sheetColumnMap` — what each canonical name was matched to
+- `sheetColumnsUnmatched` + `columnMappingWarning` — anything that found no home, with the
+  sheet's actual headers listed so you can see the difference
+
+An empty sheet has no headers to read, so the first run falls back to the canonical names and
+says so in the warnings.
+
+**2. The page genuinely did not yield the value.** `emptyFieldDiagnostics` in the summary
+holds up to five samples per field — company, profile URL, and 400 characters of real page
+text around the label the value should have been near. That is usually enough to see whether
+the page lacks the data or the parser missed it, without another live run.
+
+### Note on НКЗ codes
+
+The on-page label is **НКЗ**, and codes appear at several depths of the classification —
+`61.1` (group), `61.10` (class), `61.100` (sub-class). All are read. A code with no
+description next to it is still written, since the code is the part that identifies the
+activity.
 
 ## If Step 0 shows the search rows don't parse
 
