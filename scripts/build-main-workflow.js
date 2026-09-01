@@ -15,6 +15,8 @@ module.exports = function buildMainWorkflow() {
     // Only used when revenueFilterMode is 'range': sweep the revenue range in
     // slices so each sub-search can be paged to its own end.
     { name: 'revenueBandCount', value: 8, type: 'number' },
+    // First band when revenueFrom is 0 — geometric spacing needs a positive anchor.
+    { name: 'revenueBandFloor', value: 100000, type: 'number' },
     // Skip companies whose profile НКД does not fall under the requested code.
     { name: 'enforceNkdMatch', value: true, type: 'boolean' },
     // Google Sheet target — must be filled in before running

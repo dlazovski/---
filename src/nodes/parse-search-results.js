@@ -41,7 +41,7 @@ let failureReason = error;
 let parsed = null;
 
 if (!failureReason) {
-  parsed = parseSearchResults(html, { baseUrl: cfg.baseUrl });
+  parsed = parseSearchResults(html, { baseUrl: cfg.baseUrl, cityMode: cfg.cityMode });
   if (parsed.blocked) failureReason = parsed.blocked;
 }
 

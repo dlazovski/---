@@ -10,10 +10,11 @@ const profiles = (sd.step0 && sd.step0.profiles) || [];
 const nkdCode = (sd.step0 && sd.step0.nkdCodeUnderTest) || '';
 
 const baseline = pages.find((p) => p.isBaseline) || null;
-const filtered = pages.filter((p) => p.isFiltered && !p.isHighPageProbe && !p.isRevenueFormProbe);
+const filtered = pages.filter((p) => p.isFiltered && !p.isHighPageProbe && !p.isRevenueFormProbe && !p.isTailProbe);
+const tailProbe = pages.find((p) => p.isTailProbe) || null;
 const filteredPage1 = filtered.find((p) => p.page === 1) || null;
 const highProbe = pages.find((p) => p.isHighPageProbe) || null;
-const revenueFormProbe = pages.find((p) => p.isRevenueFormProbe) || null;
+const revenueFormProbe = pages.find((p) => p.isRevenueFormProbe && !p.isTailProbe) || null;
 
 const usable = (p) => p && !p.error && !p.blocked;
 
@@ -130,30 +131,70 @@ const q4 = {
         : 'PAGINATION SUSPECT — at least one page repeated the previous one')
 };
 
-// --- Q5: volume --------------------------------------------------------------
+// --- Q5: volume, and is the result set being truncated? ---------------------
+const ordered5 = filtered.slice().sort((a, b) => a.page - b.page);
+const lastReachable = ordered5.length ? ordered5[ordered5.length - 1] : null;
 const rowsPerPage = filtered.map((p) => p.rowCount).filter((n) => n > 0);
 const typicalPerPage = rowsPerPage.length ? Math.max(...rowsPerPage) : 0;
-const maxPageLink = Math.max(0, ...filtered.map((p) => p.maxPageLinkSeen || 0));
-const statedTotal = filtered.map((p) => p.totalResultsParsed).find((v) => typeof v === 'number' && v > 0) || null;
-const estimatedTotal = statedTotal || (maxPageLink && typicalPerPage ? maxPageLink * typicalPerPage : null);
+
+// The site clamps `p` to the last page, so p=999 coming back identical to the
+// last page probed tells us exactly how many pages this search can reach.
+const clampedToLastPage = !!(highProbe && lastReachable && highProbe.signature
+  && highProbe.signature === lastReachable.signature);
+const reachablePages = clampedToLastPage ? lastReachable.page : null;
+const reachableCompanies = (reachablePages && typicalPerPage) ? reachablePages * typicalPerPage : null;
+
+// Every ЕДБ the unrestricted search could reach.
+const reachableEdb = new Set(filtered.flatMap((p) => p.edbList || []));
+const tailRows = tailProbe ? (tailProbe.edbList || []) : [];
+const tailUnseen = tailRows.filter((e) => !reachableEdb.has(e));
+const truncated = tailUnseen.length > 0;
+
+// Lowest revenue the unrestricted search still showed — the truncation cutoff.
+const cutoffRevenue = lastReachable && typeof lastReachable.revenueMin === 'number'
+  ? lastReachable.revenueMin : null;
+
+let volumeVerdict;
+if (!tailProbe) {
+  volumeVerdict = 'UNVERIFIED — the tail probe did not run (no НКД code configured?)';
+} else if (tailProbe.error || tailProbe.blocked) {
+  volumeVerdict = 'UNVERIFIED — the tail probe failed: ' + (tailProbe.error || tailProbe.blocked);
+} else if (truncated) {
+  volumeVerdict = 'TRUNCATED — the plain search can only reach '
+    + (reachableCompanies !== null ? ('about ' + reachableCompanies + ' companies (' + reachablePages + ' pages)') : 'a limited number of companies')
+    + ', but a low-revenue search surfaced ' + tailUnseen.length + ' more that it never showed. '
+    + 'Results are sorted by revenue descending and cut off'
+    + (cutoffRevenue !== null ? (' below about ' + cutoffRevenue) : '')
+    + '. Set revenueFilterMode = "range" with revenueFrom = 0 so the sweep is split into '
+    + 'revenue bands — otherwise every smaller company is unreachable.';
+} else if (reachableCompanies !== null) {
+  volumeVerdict = 'COMPLETE (~' + reachableCompanies + ' companies, roughly '
+    + Math.max(1, Math.round((reachableCompanies * 2 * 4) / 60)) + ' minutes) — a low-revenue '
+    + 'search surfaced nothing the plain search had not already reached, so the whole result '
+    + 'set is within reach without revenue banding.';
+} else {
+  volumeVerdict = 'UNKNOWN — could not establish how many pages the search reaches. '
+    + 'Run the main workflow with maxCompanies set to a small number first.';
+}
 
 const q5 = {
-  question: 'Roughly how many companies does the НКД filter return?',
+  question: 'How many companies does the НКД filter return, and can the search actually reach them all?',
   rowsPerPageObserved: rowsPerPage,
   typicalRowsPerPage: typicalPerPage,
-  highestPageNumberLinkedInPager: maxPageLink || null,
-  totalStatedOnPage: statedTotal,
-  estimatedTotalCompanies: estimatedTotal,
-  estimatedRequests: estimatedTotal ? (estimatedTotal * 2) : null,
-  estimatedRuntimeHours: estimatedTotal ? Math.round((estimatedTotal * 2 * 4) / 3600 * 10) / 10 : null,
-  verdict: !estimatedTotal
-    ? 'UNKNOWN — no total count and no pager links found. Run the main workflow with maxCompanies '
-      + 'set to a small number first.'
-    : (estimatedTotal > 3000
-        ? 'VERY LARGE (~' + estimatedTotal + ' companies, roughly '
-          + Math.round((estimatedTotal * 2 * 4) / 3600) + ' hours at the required pace) — '
-          + 'consider narrowing to specific НКД codes rather than a whole division'
-        : 'MANAGEABLE (~' + estimatedTotal + ' companies)')
+  pageNumberClampedBySite: clampedToLastPage,
+  reachablePages,
+  reachableCompanies,
+  lowestRevenueStillVisible: cutoffRevenue,
+  tailProbe: tailProbe ? {
+    url: tailProbe.url,
+    rowsReturned: tailProbe.rowCount,
+    companiesNotReachableWithoutBanding: tailUnseen.length,
+    sample: (tailProbe.sampleRows || []).slice(0, 3)
+  } : null,
+  resultSetIsTruncated: truncated,
+  estimatedRuntimeMinutes: reachableCompanies !== null
+    ? Math.max(1, Math.round((reachableCompanies * 2 * 4) / 60)) : null,
+  verdict: volumeVerdict
 };
 
 // --- Q6: profile pages -------------------------------------------------------
@@ -207,8 +248,8 @@ const q6 = {
   }
 };
 
-const blocking = [q1.verdict, q2.verdict, q3.verdict, q4.verdict]
-  .filter((v) => /NEEDS ATTENTION|IGNORED|WRONG CODES|SUSPECT|NOT TESTED/.test(v));
+const blocking = [q1.verdict, q2.verdict, q3.verdict, q4.verdict, q5.verdict]
+  .filter((v) => /NEEDS ATTENTION|IGNORED|WRONG CODES|SUSPECT|NOT TESTED|TRUNCATED/.test(v));
 
 return [{
   json: {
@@ -227,7 +268,7 @@ return [{
     q2_nkdFilterWorks: q2,
     q3_revenueFilterRemoval: q3,
     q4_pagination: q4,
-    q5_volume: q5,
+    q5_volumeAndTruncation: q5,
     q6_profilePages: q6,
     q7_nextStep: blocking.length === 0
       ? 'All checks passed. Set googleSheetId in the main workflow, run it with maxCompanies=5 as a '

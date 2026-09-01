@@ -207,13 +207,60 @@ function parseMkNumber(raw) {
  * Implemented as "drop a trailing country segment, then take the last segment"
  * so it degrades sensibly if the country suffix is absent.
  */
-function cityFromAddress(address) {
+function cityFromAddress(address, options) {
+  var opts = options || {};
   if (!address) return '';
   var parts = String(address).split(',').map(normalizeSpace).filter(function (p) { return p.length > 0; });
   if (parts.length === 0) return '';
   if (COUNTRY_RE.test(parts[parts.length - 1])) parts = parts.slice(0, -1);
   if (parts.length === 0) return '';
-  return parts[parts.length - 1];
+
+  var municipality = parts[parts.length - 1];
+
+  // Optional: the settlement rather than the municipality.
+  //
+  // The confirmed rule yields the municipality, which for Skopje companies is a
+  // city district ("Центар", "Аеродром") rather than "Скопје". Real addresses
+  // come in two shapes:
+  //
+  //   street, НОВО СЕЛО,       Дебарца          -> settlement differs from municipality
+  //   street, СКОПЈЕ - ЦЕНТАР, ЦЕНТАР,  Центар  -> settlement repeats the municipality,
+  //                                                and the city sits one segment further
+  //                                                back, before the dash.
+  if (opts.prefer === 'settlement' && parts.length >= 2) {
+    var previous = parts[parts.length - 2];
+    var settlement = previous;
+
+    if (previous.toUpperCase() === municipality.toUpperCase() && parts.length >= 3) {
+      var earlier = parts[parts.length - 3] || '';
+      // Split on the LAST " - ": street names contain dashes too
+      // ("БУЛЕВАР КУЗМАН ЈОСИФОВСКИ - ПИТУ бр.15 СКОПЈЕ - АЕРОДРОМ"), so only the
+      // final separator marks the city/district boundary. The city is then the
+      // last all-caps word of what precedes it.
+      var cut = earlier.lastIndexOf(' - ');
+      if (cut !== -1) {
+        var tokens = earlier.slice(0, cut).split(/\s+/).filter(Boolean);
+        var candidate = tokens.length ? tokens[tokens.length - 1] : '';
+        if (candidate && candidate === candidate.toUpperCase() && /^\p{L}{3,}$/u.test(candidate)) {
+          settlement = candidate;
+        }
+      }
+    }
+
+    settlement = normalizeSpace(settlement);
+    if (settlement) return toTitleCase(settlement);
+  }
+
+  return municipality;
+}
+
+/** "СКОПЈЕ - ЦЕНТАР" -> "Скопје - Центар"; leaves already-cased text alone. */
+function toTitleCase(text) {
+  return String(text || '').split(' ').map(function (word) {
+    if (!word) return word;
+    if (word !== word.toUpperCase()) return word;
+    return word.charAt(0) + word.slice(1).toLowerCase();
+  }).join(' ');
 }
 
 /** Find the full address line (the one ending in the country name). */
@@ -736,7 +783,7 @@ function parseSearchResults(html, options) {
     var edb = edbMatch ? edbMatch[1] : '';
 
     var address = extractAddress(windowText);
-    var city = cityFromAddress(address);
+    var city = cityFromAddress(address, { prefer: opts.cityMode });
 
     var status = '';
     for (var s = 0; s < STATUS_WORDS.length; s++) {
@@ -815,7 +862,7 @@ function parseProfile(html, options) {
   if (!name) warnings.push('company name not found');
 
   var address = extractAddress(bodyText);
-  var city = cityFromAddress(address);
+  var city = cityFromAddress(address, { prefer: opts.cityMode });
   if (!address) warnings.push('address not found on profile page');
   if (address && !city) warnings.push('city could not be derived from address');
 
@@ -1012,7 +1059,7 @@ function buildSearchSegments(config) {
 
   var bands;
   if ((cfg.revenueFilterMode || 'range') === 'range') {
-    bands = buildRevenueBands(cfg.revenueFrom, cfg.revenueTo, cfg.revenueBandCount);
+    bands = buildRevenueBands(cfg.revenueFrom, cfg.revenueTo, cfg.revenueBandCount, cfg.revenueBandFloor);
   } else {
     bands = [null];
   }
@@ -1057,6 +1104,7 @@ if (typeof module !== 'undefined' && module && module.exports) {
     extractH1: extractH1,
     parseMkNumber: parseMkNumber,
     cityFromAddress: cityFromAddress,
+    toTitleCase: toTitleCase,
     extractAddress: extractAddress,
     normalizePhone: normalizePhone,
     isValidMkPhone: isValidMkPhone,
@@ -1099,24 +1147,46 @@ if (typeof module !== 'undefined' && module && module.exports) {
  * toward the low end of a revenue range — equal-width bands would put almost
  * everything in the first slice and defeat the point.
  */
-function buildRevenueBands(from, to, count) {
+/** Default floor for the first band when a range starts at 0. */
+function config_floor(value) {
+  var v = Number(value);
+  return (Number.isFinite(v) && v > 0) ? v : 100000;
+}
+
+function buildRevenueBands(from, to, count, zeroBandFloor) {
   var f = Number(from);
   var t = Number(to);
   var n = Math.floor(Number(count) || 1);
 
   if (!Number.isFinite(f) || !Number.isFinite(t) || t <= f) return [{ from: f, to: t }];
-  if (n <= 1 || f <= 0) return [{ from: f, to: t }];
+  if (n <= 1 || f < 0) return [{ from: f, to: t }];
+
+  // Geometric spacing needs a positive anchor. A range starting at 0 gets its
+  // first band carved off at a floor, and the rest spaced from there — otherwise
+  // the low bands would be a few MKD wide and waste most of the sweep.
+  var floor = Number(config_floor(arguments[3]));
+  var anchor = f > 0 ? f : floor;
+  if (!(anchor > 0) || t <= anchor) return [{ from: f, to: t }];
 
   var bands = [];
-  var ratio = t / f;
   var lo = f;
+  var spacedCount = n;
 
-  for (var i = 1; i <= n; i++) {
+  if (f === 0) {
+    bands.push({ from: 0, to: anchor - 1 });
+    lo = anchor;
+    spacedCount = n - 1;
+    if (spacedCount < 1) return bands.concat([{ from: lo, to: t }]);
+  }
+
+  var ratio = t / anchor;
+
+  for (var i = 1; i <= spacedCount; i++) {
     var hi;
-    if (i === n) {
+    if (i === spacedCount) {
       hi = t;
     } else {
-      hi = Math.round(f * Math.pow(ratio, i / n)) - 1;
+      hi = Math.round(anchor * Math.pow(ratio, i / spacedCount)) - 1;
       if (hi > t) hi = t;
     }
     if (hi < lo) continue;

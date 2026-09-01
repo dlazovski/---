@@ -31,6 +31,7 @@ function probe(label, overrides, page, opts) {
     isFiltered: !!(settings.activityType),
     isHighPageProbe: !!(opts && opts.isHighPageProbe),
     isRevenueFormProbe: !!(opts && opts.isRevenueFormProbe),
+    isTailProbe: !!(opts && opts.isTailProbe),
     searchUrl: buildSearchUrl(settings, page)
   });
 }
@@ -54,6 +55,19 @@ if (code) {
   // Same filter, the other way of saying "no revenue restriction".
   probe('filtered — at=' + code + ', revenue block omitted',
     { activityType: code, revenueFilterMode: 'off-omit' }, 1, { isRevenueFormProbe: true });
+
+  // Tail probe — the decisive test for result truncation.
+  //
+  // Results come back sorted by revenue descending. If the site caps how many
+  // results a search can page through, the companies that fall off the end are
+  // the smallest ones, and they are invisible from the unrestricted search alone.
+  // Asking specifically for a low revenue band surfaces them: any company here
+  // that the unrestricted pages never showed proves the result set was truncated,
+  // and that the sweep has to be split into revenue bands to reach everything.
+  const tailTo = Number(cfg.tailProbeRevenueTo) || 5000000;
+  probe('tail probe — at=' + code + ', revenue 0–' + tailTo,
+    { activityType: code, revenueFilterMode: 'range', revenueFrom: 0, revenueTo: tailTo },
+    1, { isTailProbe: true });
 } else {
   sd.step0.warning = 'no НКД code configured — set nkdCodes in Config, otherwise only the baseline is probed';
 }

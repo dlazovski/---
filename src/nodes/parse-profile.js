@@ -31,7 +31,8 @@ let parsed = null;
 if (!failure) {
   parsed = parseProfile(html, {
     excludePhones: splitList(cfg.excludePhones),
-    excludeEmails: splitList(cfg.excludeEmails)
+    excludeEmails: splitList(cfg.excludeEmails),
+    cityMode: cfg.cityMode
   });
   if (parsed.blocked) failure = parsed.blocked;
 }

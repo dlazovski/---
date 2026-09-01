@@ -235,8 +235,14 @@ const SEARCH_CONFIG_FIELDS = [
   { name: 'balanceYear', value: 2025, type: 'number' },
   { name: 'area', value: '', type: 'string' },
   { name: 'subarea', value: '', type: 'string' },
-  { name: 'excludePhones', value: '', type: 'string' },
-  { name: 'excludeEmails', value: '', type: 'string' }
+  // CompanyWall's own number appears in the page chrome of every profile. It is
+  // already excluded by stripping header/footer, but naming it here is the
+  // belt-and-braces version — it must never reach a company's row.
+  { name: 'excludePhones', value: '075387170', type: 'string' },
+  { name: 'excludeEmails', value: '', type: 'string' },
+  // 'municipality' = the confirmed rule (Skopje companies get Центар / Аеродром).
+  // 'settlement'   = the city proper (those companies get Скопје).
+  { name: 'cityMode', value: 'municipality', type: 'string' }
 ];
 
 module.exports = {

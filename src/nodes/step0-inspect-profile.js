@@ -25,7 +25,8 @@ if (error || !target.profileUrl) {
 
 const parsed = parseProfile(html, {
   excludePhones: splitList(cfg.excludePhones),
-  excludeEmails: splitList(cfg.excludeEmails)
+  excludeEmails: splitList(cfg.excludeEmails),
+  cityMode: cfg.cityMode
 });
 
 record.blocked = parsed.blocked || '';
@@ -51,12 +52,18 @@ record.contactsSectionBytes = contacts.length;
 record.renderJsLikelyRequired = !(parsed.phones.length || parsed.emails.length || parsed.people.length);
 
 // Q6b: is the formatted-vs-digits duplication consistent?
-const rawPhoneTokens = extractPhones(contacts.length ? contacts : html, { format: 'normalized' });
+// Measured against the same source parseProfile used — scanning the raw HTML here
+// instead would pick up the site's own footer number and report it as duplication.
+const phoneSource = contacts.length ? contacts : stripChrome(html);
+const rawPhoneTokens = extractPhones(phoneSource, {
+  format: 'normalized',
+  exclude: splitList(cfg.excludePhones)
+});
 record.phones = parsed.phones;
 record.phoneCountAfterDedupe = parsed.phones.length;
 record.distinctPhoneKeys = [...new Set(rawPhoneTokens)];
 record.phoneDedupeCollapsedDuplicates = rawPhoneTokens.length !== record.distinctPhoneKeys.length;
-record.phoneSource = parsed.phoneSource;
+record.phoneSourceUsed = parsed.phoneSource;
 
 record.emails = parsed.emails;
 record.emailSource = parsed.emailSource;

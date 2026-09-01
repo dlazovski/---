@@ -451,3 +451,102 @@ test('describeSegment: reads as something a human can scan in a log', () => {
   );
   assert.strictEqual(P.describeSegment({ activityType: '' }), 'all activities, any revenue');
 });
+
+// ---------------------------------------------------------------------------
+// Real data observed in the live Step 0 run (НКД 61, 2026-09-01)
+//
+// These strings are verbatim from real profile pages, so unlike the synthetic
+// fixtures they pin the parsers to how the site actually formats things.
+// ---------------------------------------------------------------------------
+
+const REAL_ADDRESSES = {
+  a1: 'Друштво со ограничена одговорност со едноличен капитал А1 МАКЕДОНИЈА ДООЕЛ Скопје '
+    + 'е регистрирана на ПЛОШТАД ПРЕСВЕТА БОГОРОДИЦА бр.1, СКОПЈЕ - ЦЕНТАР, ЦЕНТАР, Центар, '
+    + 'Република Северна Македонија и работи од 01.10.2015 година.',
+  neotel: 'Акционерско друштво НЕОТЕЛ АД Скопје е регистрирана на БУЛЕВАР КУЗМАН ЈОСИФОВСКИ - '
+    + 'ПИТУ бр.15 СКОПЈЕ - АЕРОДРОМ, АЕРОДРОМ, Аеродром, Република Северна Македонија и работи '
+    + 'од 30.6.2004 година.',
+  makitel: 'Друштво со ограничена одговорност со едноличен капитал МАКИТЕЛ ДООЕЛ с.Ново село '
+    + 'Дебарца е регистрирана на НАСЕЛЕНО МЕСТО БЕЗ УЛИЧЕН СИСТЕМ, НОВО СЕЛО, Дебарца, '
+    + 'Република Северна Македонија и работи од 12.12.2006 година.',
+  telekabel: 'Друштво со ограничена одговорност со едноличен капитал ТЕЛЕКАБЕЛ ДООЕЛ Штип е '
+    + 'регистрирана на ВАНЧО ПРЌЕ бр.88, ШТИП, ШТИП, Штип, Република Северна Македонија и '
+    + 'работи од 20.8.1998 година.'
+};
+
+test('real data: the confirmed rule yields the municipality, trailing sentence and all', () => {
+  // The address is embedded in a sentence that continues past the country name.
+  assert.strictEqual(P.cityFromAddress(REAL_ADDRESSES.a1), 'Центар');
+  assert.strictEqual(P.cityFromAddress(REAL_ADDRESSES.neotel), 'Аеродром');
+  assert.strictEqual(P.cityFromAddress(REAL_ADDRESSES.makitel), 'Дебарца');
+  assert.strictEqual(P.cityFromAddress(REAL_ADDRESSES.telekabel), 'Штип');
+});
+
+test('real data: settlement mode resolves Skopje districts to Скопје', () => {
+  const settlement = (a) => P.cityFromAddress(a, { prefer: 'settlement' });
+  assert.strictEqual(settlement(REAL_ADDRESSES.a1), 'Скопје');
+  assert.strictEqual(settlement(REAL_ADDRESSES.neotel), 'Скопје');
+  assert.strictEqual(settlement(REAL_ADDRESSES.telekabel), 'Штип');
+  assert.strictEqual(settlement(REAL_ADDRESSES.makitel), 'Ново Село');
+});
+
+test('real data: a dash inside the street name does not derail settlement mode', () => {
+  // "БУЛЕВАР КУЗМАН ЈОСИФОВСКИ - ПИТУ бр.15 СКОПЈЕ - АЕРОДРОМ" contains two " - ".
+  // Only the last one separates city from district.
+  assert.strictEqual(P.cityFromAddress(REAL_ADDRESSES.neotel, { prefer: 'settlement' }), 'Скопје');
+});
+
+test("real data: CompanyWall's own phone is never taken for a company's", () => {
+  // 075387170 appeared in the raw HTML of all four probed profiles.
+  const page = 'Контакт: 032/612-609 032612612 074747474 ... подршка 075387170';
+  const phones = P.extractPhones(page, { exclude: ['075387170'] });
+  assert.deepStrictEqual(phones, ['032/612-609', '032612612', '074747474']);
+});
+
+test('real data: distinct numbers on one profile all survive de-duplication', () => {
+  // НЕОТЕЛ listed three genuinely different numbers, two of them separator-free.
+  const phones = P.extractPhones('02/5511-100 025511155 025511111');
+  assert.deepStrictEqual(phones, ['02/5511-100', '025511155', '025511111']);
+});
+
+test('real data: revenue figures on results rows parse at billion scale', () => {
+  assert.strictEqual(P.parseMkNumber('11.569.891.505'), 11569891505);
+  assert.strictEqual(P.parseMkNumber('14.841.175'), 14841175);
+});
+
+test('real data: НКД 61 sub-codes fall under the 61 division filter', () => {
+  assert.strictEqual(P.nkdMatchesFilter('61.100', '61'), true);
+  assert.strictEqual(P.nkdMatchesFilter('61.900', '61'), true);
+  assert.strictEqual(P.nkdMatchesFilter('27.110', '61'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Revenue bands starting at zero
+// ---------------------------------------------------------------------------
+
+test('buildRevenueBands: a range starting at 0 is contiguous and covers everything', () => {
+  const bands = P.buildRevenueBands(0, 12000000000, 10);
+  assert.strictEqual(bands[0].from, 0);
+  assert.strictEqual(bands[bands.length - 1].to, 12000000000);
+  for (let i = 1; i < bands.length; i++) {
+    assert.strictEqual(bands[i].from, bands[i - 1].to + 1, 'gap or overlap before band ' + (i + 1));
+  }
+});
+
+test('buildRevenueBands: the zero band is carved off at the floor, not at a few MKD', () => {
+  // Geometric spacing anchored at 0 would make the first bands a handful of MKD
+  // wide and waste most of the sweep.
+  const bands = P.buildRevenueBands(0, 12000000000, 10);
+  assert.strictEqual(bands[0].to, 99999);
+  assert.ok(bands[1].to - bands[1].from > 100000, 'second band is implausibly narrow');
+  const custom = P.buildRevenueBands(0, 12000000000, 10, 1000000);
+  assert.strictEqual(custom[0].to, 999999);
+});
+
+test('buildRevenueBands: bands get wider as revenue grows', () => {
+  const bands = P.buildRevenueBands(0, 12000000000, 10);
+  const widths = bands.map((b) => b.to - b.from);
+  for (let i = 2; i < widths.length; i++) {
+    assert.ok(widths[i] > widths[i - 1], 'band ' + (i + 1) + ' is not wider than the one before it');
+  }
+});

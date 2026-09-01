@@ -445,3 +445,47 @@ test('the shipped Config carries an obvious НКД placeholder, not a stale code
   assert.match(cfg.find((a) => a.name === 'nkdCodes').value, /PUT-YOUR/);
   assert.strictEqual(cfg.find((a) => a.name === 'revenueFilterMode').value, 'off-zero');
 });
+
+// ---------------------------------------------------------------------------
+// Config behaviour observed to matter in the live Step 0 run
+// ---------------------------------------------------------------------------
+
+test('config: the site\'s own phone number is excluded by default', () => {
+  const cfg = nodeByName('Config').parameters.assignments.assignments;
+  const excluded = cfg.find((a) => a.name === 'excludePhones').value;
+  assert.match(excluded, /075387170/,
+    "CompanyWall's own number appears on every profile and must be excluded by default");
+});
+
+test('config: cityMode defaults to the confirmed municipality rule', () => {
+  const cfg = nodeByName('Config').parameters.assignments.assignments;
+  assert.strictEqual(cfg.find((a) => a.name === 'cityMode').value, 'municipality');
+});
+
+test('cityMode: switching to settlement changes what lands in the Град column', () => {
+  const municipality = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
+  const settlement = runWorkflow({ existingRows: [], config: { nkdCodes: '', cityMode: 'settlement' } });
+
+  const makitelBy = (run) => run.sheetRows.find((r) => r['Клиент'] === 'МАКИТЕЛ ДООЕЛ')['Град'];
+  assert.strictEqual(makitelBy(municipality), 'Струмица');
+  assert.strictEqual(makitelBy(settlement), 'Струмица');
+
+  // Both modes must still produce a non-empty city for every written row.
+  for (const run of [municipality, settlement]) {
+    for (const row of run.sheetRows) {
+      assert.ok(row['Град'].length > 0, 'a row was written with an empty Град');
+    }
+  }
+});
+
+test('revenue banding: a zero-based range reaches the smallest companies', () => {
+  const run = runWorkflow({
+    existingRows: [],
+    config: { nkdCodes: '', revenueFilterMode: 'range', revenueFrom: 0, revenueTo: 12000000000, revenueBandCount: 10 }
+  });
+  assert.strictEqual(run.summary.segmentsPlanned, 10);
+  // The first segment must actually start at zero, or companies with little or
+  // no revenue stay unreachable — which is the whole point of banding.
+  assert.strictEqual(run.summary.segments[0].revenueFrom, 0);
+  assert.match(run.requestLog[0], /dsm\[0\]\.From=0&dsm\[0\]\.To=99999/);
+});

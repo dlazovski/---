@@ -41,6 +41,7 @@ exactly what these probes do.
 | Pages `2`, `3` of the filtered search | Confirm `&p=N` really pages |
 | Filtered search at page `999` | Observe the **real** end-of-results behaviour instead of assuming one |
 | Filtered search with the **revenue block omitted** | Compare the two ways of expressing "no revenue filter" |
+| Filtered search on a **low revenue band** | The tail probe — the decisive test for whether results are being truncated |
 | 4 profile pages from the filtered results | Read each company's **actual** НКД code, plus render_js / phone / owner-manager checks |
 
 ## Reading the report
@@ -61,7 +62,7 @@ questions:
 | `q2_nkdFilterWorks` | **Does `at=<code>` restrict to that division?** | `CONFIRMED` |
 | `q3_revenueFilterRemoval` | Which "no revenue filter" URL form does the site honour? | `EITHER WORKS` |
 | `q4_pagination` | Does `&p=N` page, and what is the end of results? | `OK — each probed page returned different companies` |
-| `q5_volume` | How many companies, and how long will that take? | A number you are willing to wait for |
+| `q5_volumeAndTruncation` | How many companies, and can the search reach them all? | `COMPLETE` |
 | `q6_profilePages` | render_js needed? phone duplication? owner/manager present? | `CONFIRMED — a plain GET returns the Контакти data` |
 
 ### Acting on each verdict
@@ -89,9 +90,28 @@ unrestricted by revenue.
 number rather than returning an empty list. That is expected and handled: the loop also
 stops when a page repeats the previous one or contains only companies already collected.
 
-**`q5` says `VERY LARGE`** — a whole division with no revenue filter can be thousands of
-companies and many hours at the required pace. Consider narrowing to specific codes
-(`46.110, 46.120`) rather than the whole division, or re-enabling a revenue filter.
+**`q5` says `TRUNCATED`** — this is the important one, and it is easy to miss.
+
+Results come back **sorted by revenue descending**, and the site limits how many pages a
+single search can reach (`p=999` returns the last reachable page verbatim). The companies
+that fall off the end are the *smallest* ones, and they are invisible from the plain search
+— it looks like a complete result set.
+
+The tail probe asks specifically for a low revenue band. If it returns companies the plain
+search never showed, the result set was truncated. The fix is the banded sweep:
+
+```
+revenueFilterMode: range
+revenueFrom:       0
+revenueTo:         (comfortably above the largest company, e.g. 12000000000)
+revenueBandCount:  10
+```
+
+Each band is then short enough to be paged to its own end, and their union is the whole
+division. `revenueBandFloor` (default `100000`) sets how wide the first `0 …` band is.
+
+**`q5` says `COMPLETE`** — the tail probe surfaced nothing new, so the plain search already
+reaches everything. No banding needed.
 
 **`q6.renderJs` says profiles returned no contact data** — set `renderJs` to `'true'` in
 Config and re-run Step 0 to compare. This roughly doubles ScrapingBee credit usage, so only

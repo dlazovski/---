@@ -18,6 +18,7 @@ const record = {
   isFiltered: target.isFiltered === true,
   isHighPageProbe: target.isHighPageProbe === true,
   isRevenueFormProbe: target.isRevenueFormProbe === true,
+  isTailProbe: target.isTailProbe === true,
   url: target.searchUrl,
   httpStatus: status,
   error: error || '',
@@ -29,7 +30,7 @@ if (error) {
   return [{ json: record }];
 }
 
-const parsed = parseSearchResults(html, { baseUrl: cfg.baseUrl });
+const parsed = parseSearchResults(html, { baseUrl: cfg.baseUrl, cityMode: cfg.cityMode });
 
 record.blocked = parsed.blocked || '';
 record.profileLinkMatches = parsed.linkMatches;
@@ -43,6 +44,12 @@ record.signature = record.edbList.slice().sort().join('|');
 
 // Nationwide? Cities are the only observable proxy on a results row.
 record.distinctCities = [...new Set(parsed.rows.map((r) => r.city).filter(Boolean))];
+
+// Revenue span of this page — results are returned sorted by revenue descending,
+// so the lowest value on the last reachable page is where truncation would bite.
+const revenues = parsed.rows.map((r) => r.revenue).filter((v) => typeof v === 'number' && Number.isFinite(v));
+record.revenueMin = revenues.length ? Math.min(...revenues) : null;
+record.revenueMax = revenues.length ? Math.max(...revenues) : null;
 
 // Total result count, if the page states one anywhere.
 const text = htmlToText(html);

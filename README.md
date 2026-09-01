@@ -67,6 +67,31 @@ particular, covers four different possible end-of-results behaviours at once.
 
 ---
 
+## What the live Step 0 run established (НКД 61, 2026-09-01)
+
+| Question | Result |
+| --- | --- |
+| Does `at=<division>` filter? | **Yes.** `at=61` narrowed the results and all probed companies were `61.100` / `61.900` |
+| Which "no revenue filter" form? | **Either.** Both returned identical results; `off-zero` stays the default |
+| `render_js` needed? | **No.** A plain GET returns phones, e-mails and the owner/manager list |
+| `/lica` fallback needed? | **Rarely.** All four probed profiles listed people on the main page |
+| Pagination | Works, but the site **clamps `p` to the last page** — `p=999` returned page 3 verbatim |
+
+Two things the first report did not flag, found by reading its raw records:
+
+- **Results are sorted by revenue descending and the search can only reach a few
+  pages.** For НКД 61 that was 3 pages ≈ 60 companies, cutting off below ~14.8M MKD.
+  Whether smaller companies exist beyond that cutoff is now tested directly by the
+  **tail probe** — see `q5_volumeAndTruncation`. If it reports `TRUNCATED`, set
+  `revenueFilterMode: range` with `revenueFrom: 0` so the sweep is split into bands.
+- **CompanyWall's own number (`075387170`) appears in every profile's HTML.** It was
+  already kept out of the output by stripping page chrome; it is now also excluded by
+  name in `excludePhones`.
+
+Also worth a decision: for Skopje companies the confirmed city rule yields the
+**district** (`Центар`, `Аеродром`), not `Скопје`. Set `cityMode: settlement` if you
+want the city proper — it resolves those to `Скопје` and leaves `Штип` alone.
+
 ## Setup
 
 ### 1. Import the workflows
@@ -128,7 +153,7 @@ output. Each of the seven questions carries a `verdict`. Report them back — es
 1. Set `maxCompanies` to `5` in Config and run once. Check the five rows in the sheet.
 2. Set `maxCompanies` back to `0` (unlimited) and run for real.
 
-Budget from Step 0's `q5_volume.estimatedRuntimeHours`. At 2 requests per company plus a
+Budget from Step 0's `q5_volumeAndTruncation.estimatedRuntimeMinutes`. At 2 requests per company plus a
 3–5 s wait each, roughly **250 companies per hour**. A whole НКД division with no revenue
 filter can be much larger than a revenue-bounded search was, so check the estimate before
 starting rather than after. That pace is deliberate — see below.
@@ -224,6 +249,8 @@ Set in the **Config** node.
 | `revenueFilterMode` | `off-zero` | `off-zero` / `off-omit` = no revenue filter; `range` = filter between the bounds below |
 | `revenueFrom` / `revenueTo` | `5000000` / `400000000` | Revenue bounds — only used when `revenueFilterMode` is `range` |
 | `enforceNkdMatch` | `true` | Skip companies whose profile НКД does not fall under the requested code |
+| `cityMode` | `municipality` | `municipality` = the confirmed rule (Skopje companies get `Центар`/`Аеродром`); `settlement` = the city proper (`Скопје`) |
+| `revenueBandFloor` | `100000` | Width of the first band when `revenueFrom` is `0` |
 | `balanceYear` | `2025` | `bly` — the financial year the filter applies to |
 | `area` / `subarea` | *(empty)* | Empty = nationwide |
 | `renderJs` | `'false'` | ScrapingBee JS rendering. Only set `'true'` if Step 0 says it's needed |
@@ -232,7 +259,7 @@ Set in the **Config** node.
 | `maxConsecutiveFailures` | `3` | Consecutive search-page failures before giving up |
 | `revenueBandCount` | `8` | Revenue slices per НКД code. Only applies when `revenueFilterMode` is `range` |
 | `writePartialRows` | `false` | `true` writes search-page fields when a profile fetch fails |
-| `excludePhones` / `excludeEmails` | *(empty)* | Comma-separated values to never write |
+| `excludePhones` / `excludeEmails` | `075387170` / *(empty)* | Comma-separated values to never write. The default is CompanyWall's own number, which appears on every profile |
 | `googleSheetId` / `googleSheetName` | placeholder / `Sheet1` | Target sheet |
 | `sheetEdbColumn` | `Даночен БРОЈ` | Column read back to skip companies already collected |
 
@@ -245,7 +272,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   121 tests: parser units, end-to-end simulation, structural checks.
+test/                   135 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -255,7 +282,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 121 tests, no network access needed
+npm test        # 135 tests, no network access needed
 npm run check   # both
 ```
 

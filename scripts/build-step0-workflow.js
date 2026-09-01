@@ -9,6 +9,8 @@ module.exports = function buildStep0Workflow() {
     { name: 'probeFirstPages', value: 3, type: 'number' },
     { name: 'probeHighPage', value: 999, type: 'number' },
     { name: 'probeProfileCount', value: 3, type: 'number' },
+    // Ceiling for the tail probe: low enough to sit under any truncation cutoff.
+    { name: 'tailProbeRevenueTo', value: 5000000, type: 'number' },
     {
       name: 'knownProfileUrl',
       value: 'https://www.companywall.com.mk/kompanija/makitel-dooel-strumica/MM7EwwsC',
@@ -46,8 +48,10 @@ module.exports = function buildStep0Workflow() {
       '- the filtered search with the **revenue block omitted**, to compare the two ways of ' +
       'saying "no revenue filter";\n' +
       '- **4 profile pages**, to read the actual НКД code of each company.\n\n' +
-      'Roughly **12 requests**, each preceded by a 3–5 s wait: about two minutes.',
-      [-320, 20], 480, 400, 4),
+      '- a **tail probe** on a low revenue band — the decisive test for whether the ' +
+      'result set is being truncated.\n\n' +
+      'Roughly **13 requests**, each preceded by a 3–5 s wait: about two minutes.',
+      [-320, 20], 480, 430, 4),
 
     B.stickyNote('Note — read the report',
       '## Reading the result\n\n' +
