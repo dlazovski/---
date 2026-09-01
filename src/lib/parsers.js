@@ -1077,6 +1077,40 @@ function buildSearchSegments(config) {
   return segments;
 }
 
+/**
+ * Split a segment's revenue band in two.
+ *
+ * Used when a segment hits the site's result cap: its companies cannot all be
+ * paged to, so the band is halved and both halves are swept instead. The split
+ * point is the geometric midpoint, not the arithmetic one — company counts are
+ * heavily skewed toward the low end, so an arithmetic midpoint would leave
+ * almost everything in the lower half and need splitting again immediately.
+ *
+ * Returns null when the segment carries no revenue band, or the band is already
+ * too narrow to divide.
+ */
+function splitSegmentByRevenue(segment, minWidth) {
+  var seg = segment || {};
+  if (seg.revenueFrom === undefined || seg.revenueTo === undefined) return null;
+
+  var from = Number(seg.revenueFrom);
+  var to = Number(seg.revenueTo);
+  var floor = Number(minWidth);
+  if (!Number.isFinite(floor) || floor < 1) floor = 1000;
+
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+  if (to <= from || (to - from) < floor) return null;
+
+  var mid = Math.round(Math.sqrt(Math.max(from, 1) * to));
+  if (mid <= from || mid >= to) mid = from + Math.floor((to - from) / 2);
+  if (mid <= from || mid >= to) return null;
+
+  return [
+    Object.assign({}, seg, { revenueFrom: from, revenueTo: mid }),
+    Object.assign({}, seg, { revenueFrom: mid + 1, revenueTo: to })
+  ];
+}
+
 /** One-line description of a segment, for logs and the run summary. */
 function describeSegment(segment) {
   var s = segment || {};
@@ -1127,6 +1161,7 @@ if (typeof module !== 'undefined' && module && module.exports) {
     isNkdDivision: isNkdDivision,
     nkdMatchesFilter: nkdMatchesFilter,
     buildSearchSegments: buildSearchSegments,
+    splitSegmentByRevenue: splitSegmentByRevenue,
     describeSegment: describeSegment
   };
 }

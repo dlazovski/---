@@ -17,6 +17,11 @@ module.exports = function buildMainWorkflow() {
     { name: 'revenueBandCount', value: 8, type: 'number' },
     // First band when revenueFrom is 0 — geometric spacing needs a positive anchor.
     { name: 'revenueBandFloor', value: 100000, type: 'number' },
+    // The site caps how far a search can be paged; a band that hits the cap is
+    // halved and both halves swept, so no company is left unreachable.
+    { name: 'autoSplitTruncatedBands', value: true, type: 'boolean' },
+    { name: 'minBandWidth', value: 1000, type: 'number' },
+    { name: 'maxSegments', value: 400, type: 'number' },
     // Skip companies whose profile НКД does not fall under the requested code.
     { name: 'enforceNkdMatch', value: true, type: 'boolean' },
     // Google Sheet target — must be filled in before running
@@ -107,6 +112,18 @@ module.exports = function buildMainWorkflow() {
       'non-matching rows are skipped (`enforceNkdMatch`). A high ' +
       '`companiesNotMatchingNkdFilter` in the summary means the filter is not working.',
       [1140, 20], 480, 380, 3),
+
+    B.stickyNote('Note — the result cap',
+      '## Why bands get split mid-run\n\n' +
+      'The site returns results **sorted by revenue descending** and only lets a search be ' +
+      'paged so far — measured at **3 pages / 60 companies**. Everything below that cutoff ' +
+      'is invisible, and a capped search looks exactly like a complete one.\n\n' +
+      'So when a segment stops at the cap while its last page was still full, its revenue ' +
+      'band is **halved automatically** and both halves are swept instead. This repeats until ' +
+      'each band fits under the cap.\n\n' +
+      'This needs `revenueFilterMode: range` — a band is what gets split. Check ' +
+      '`segmentsStillTruncated` in the summary: anything above 0 means companies were missed.',
+      [1660, 20], 470, 360, 4),
 
     B.stickyNote('Note — rate limiting',
       '## Rate limiting\n\n' +

@@ -22,6 +22,11 @@ const summary = {
   nkdCodesFiltered: nkdCodes,
   segmentsPlanned: stats.segmentsPlanned || 0,
   segmentsCompleted: stats.segmentsCompleted || 0,
+  segmentsAddedBySplitting: stats.segmentsSplit || 0,
+  segmentsThatHitTheResultCap: stats.segmentsHitResultCap || 0,
+  segmentsStillTruncated: stats.segmentsTruncated || 0,
+  truncatedSegments: stats.truncatedSegments || [],
+  rowsPerSearchPage: stats.maxRowsPerPage || 0,
   segments: segments.map((seg, i) => ({
     segment: i + 1,
     nkd: seg.activityType || '(all activities)',
@@ -73,6 +78,16 @@ if (nkdCodes.length > 0 && nkdChecked >= 5 && summary.companiesNotMatchingNkdFil
     + 'the requested НКД code(s) ' + nkdCodes.join(', ') + '. The `at=` search parameter is most likely '
     + 'being ignored by the site, so the search was effectively unfiltered. Verify the parameter with the '
     + 'Step 0 workflow before trusting this run.';
+}
+
+// Companies were provably missed: say so loudly, because the sheet will look
+// complete and there is no way to tell from the rows themselves.
+if (summary.segmentsStillTruncated > 0) {
+  summary.truncationWarning = summary.segmentsStillTruncated + ' segment(s) hit the site\'s result '
+    + 'cap and could not be split further, so companies in those revenue bands were NOT collected: '
+    + summary.truncatedSegments.join('; ') + '. Narrow them by hand — a specific НКД code instead of '
+    + 'a whole division, or a smaller revenue range — and re-run; the sheet de-duplication means '
+    + 'nothing already collected is fetched twice.';
 }
 
 // A run that found nothing new usually means the filter is genuinely exhausted.

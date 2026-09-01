@@ -76,17 +76,40 @@ particular, covers four different possible end-of-results behaviours at once.
 | `render_js` needed? | **No.** A plain GET returns phones, e-mails and the owner/manager list |
 | `/lica` fallback needed? | **Rarely.** All four probed profiles listed people on the main page |
 | Pagination | Works, but the site **clamps `p` to the last page** — `p=999` returned page 3 verbatim |
+| Can a search reach everything? | **No.** Capped at 3 pages / 60 companies, ordered by revenue — see below |
 
-Two things the first report did not flag, found by reading its raw records:
+### The result set is truncated — this is the important one
 
-- **Results are sorted by revenue descending and the search can only reach a few
-  pages.** For НКД 61 that was 3 pages ≈ 60 companies, cutting off below ~14.8M MKD.
-  Whether smaller companies exist beyond that cutoff is now tested directly by the
-  **tail probe** — see `q5_volumeAndTruncation`. If it reports `TRUNCATED`, set
-  `revenueFilterMode: range` with `revenueFrom: 0` so the sweep is split into bands.
-- **CompanyWall's own number (`075387170`) appears in every profile's HTML.** It was
-  already kept out of the output by stripping page chrome; it is now also excluded by
-  name in `excludePhones`.
+**Confirmed by the tail probe.** The site returns results **sorted by revenue
+descending** and clamps `p` to the 3rd page, so a search can only ever reach
+**60 companies**. For НКД 61 the cutoff sat at 5,986,521 MKD; a search restricted to
+revenue 0–5,000,000 returned **19 companies, none of which the plain search had shown**.
+
+A capped search is indistinguishable from a complete one — the rows look fine, there
+is just silently less of them. So the sweep now **detects the cap and halves the
+revenue band**, sweeping both halves, repeating until every band fits under it. That
+needs `revenueFilterMode: range`, because a band is what gets split.
+
+**Recommended configuration for a whole division:**
+
+```
+nkdCodes:                 61
+revenueFilterMode:        range
+revenueFrom:              0
+revenueTo:                20000000000
+revenueBandCount:         8
+autoSplitTruncatedBands:  true
+```
+
+`revenueBandCount` only needs to be in the right ballpark — splitting corrects it at
+runtime. Afterwards, check **`segmentsStillTruncated`** in the summary: anything above
+`0` means a band hit the cap and could not be divided further, and those companies were
+not collected.
+
+### CompanyWall's own phone number
+
+`075387170` appears in every profile's HTML. It was already kept out of the output by
+stripping page chrome; it is now also excluded by name in `excludePhones`.
 
 Also worth a decision: for Skopje companies the confirmed city rule yields the
 **district** (`Центар`, `Аеродром`), not `Скопје`. Set `cityMode: settlement` if you
@@ -251,6 +274,9 @@ Set in the **Config** node.
 | `enforceNkdMatch` | `true` | Skip companies whose profile НКД does not fall under the requested code |
 | `cityMode` | `municipality` | `municipality` = the confirmed rule (Skopje companies get `Центар`/`Аеродром`); `settlement` = the city proper (`Скопје`) |
 | `revenueBandFloor` | `100000` | Width of the first band when `revenueFrom` is `0` |
+| `autoSplitTruncatedBands` | `true` | Halve a revenue band that hits the site's result cap and sweep both halves |
+| `minBandWidth` | `1000` | Stop splitting once a band is this narrow |
+| `maxSegments` | `400` | Hard ceiling on segments, so splitting cannot run away |
 | `balanceYear` | `2025` | `bly` — the financial year the filter applies to |
 | `area` / `subarea` | *(empty)* | Empty = nationwide |
 | `renderJs` | `'false'` | ScrapingBee JS rendering. Only set `'true'` if Step 0 says it's needed |
@@ -272,7 +298,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   135 tests: parser units, end-to-end simulation, structural checks.
+test/                   146 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -282,7 +308,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 135 tests, no network access needed
+npm test        # 146 tests, no network access needed
 npm run check   # both
 ```
 
@@ -301,6 +327,10 @@ npm run check   # both
 - **Structural checks** — every request preceded by a Wait node, batch size 1, all traffic
   through ScrapingBee, every `$('Node')` reference resolving to a node that actually runs
   first, no authenticated URLs, no baked-in credentials.
+- **Truncation simulation** (`test/truncation.test.js`) — models the site's real
+  constraint (revenue-sorted, 20 per page, `p` clamped at 3) with a 137-company
+  population, and proves the banded sweep plus auto-splitting collects **every one of
+  them**, each fetched once, while an unbanded sweep reaches only 60 and says so.
 
 > The HTML fixtures in `test/fixtures/` are **synthetic**. They reproduce the confirmed
 > page structures but are not captures of live pages. Replacing them with real ScrapingBee

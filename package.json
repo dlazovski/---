@@ -5,7 +5,7 @@
   "description": "n8n workflow that scrapes CompanyWall.com.mk for companies nationwide filtered by annual revenue, via ScrapingBee, into a Google Sheet",
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "node --test test/parsers.test.js test/workflow.test.js test/workflow-structure.test.js",
+    "test": "node --test test/parsers.test.js test/workflow.test.js test/workflow-structure.test.js test/truncation.test.js",
     "check": "npm run build && npm test"
   },
   "engines": {

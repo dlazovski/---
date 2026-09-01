@@ -5,10 +5,15 @@
 // The end-of-segment condition covers several possible site behaviours, because
 // which one applies is confirmed only by observation:
 //   1. the page yields zero company rows;
-//   2. the page repeats the previous page exactly (site clamps `p`);
-//   3. every company on the page was already collected;
+//   2. the page is short — fewer rows than a full page, so it is the last one;
+//   3. the page repeats the previous page exactly (site clamps `p`);
 //   4. a per-segment safety cap on page count.
 // Whole-run stops: the company cap, or too many consecutive request failures.
+//
+// Reaching the clamp on a still-full page means the site would not let us page
+// any further, NOT that the segment ran out — results are sorted by revenue
+// descending, so the companies past the cap are simply invisible. When that
+// happens the revenue band is halved and both halves are swept instead.
 
 const cfg = $('Config').first().json;
 const state = $('Build Search URL').first().json;
@@ -27,6 +32,7 @@ const url = state.searchUrl;
 const maxPages = Number(cfg.maxPages) || 60;
 const maxCompanies = Number(cfg.maxCompanies) || 0;
 const maxConsecutiveFailures = Number(cfg.maxConsecutiveFailures) || 3;
+const maxSegments = Number(cfg.maxSegments) || 400;
 
 let consecutiveFailures = Number(state.consecutiveFailures) || 0;
 let stop = false;
@@ -39,6 +45,31 @@ let newRows = 0;
 let alreadyInSheet = 0;
 let failureReason = error;
 let parsed = null;
+let hitResultCap = false;
+
+function collectRows() {
+  for (const row of parsed.rows) {
+    const key = row.edb || row.profilePath;
+    if (!key) {
+      stats.warnings.push('[' + segmentLabel + '] page ' + page + ': row with neither ЕДБ nor profile link, dropped');
+      continue;
+    }
+    if (sd.sheetKeys[key]) {
+      // Already in the sheet from an earlier run — skip without re-fetching it.
+      stats.alreadyInSheetSkipped += 1;
+      sd.seenKeys[key] = true;
+      alreadyInSheet += 1;
+      continue;
+    }
+    if (sd.seenKeys[key]) {
+      stats.duplicatesSkipped += 1;
+      continue;
+    }
+    sd.seenKeys[key] = true;
+    sd.collected.push({ ...row, foundOnPage: page, foundInSegment: segmentLabel, nkdFilter: segment.activityType || '' });
+    newRows += 1;
+  }
+}
 
 if (!failureReason) {
   parsed = parseSearchResults(html, { baseUrl: cfg.baseUrl, cityMode: cfg.cityMode });
@@ -58,6 +89,7 @@ if (failureReason) {
   consecutiveFailures = 0;
   stats.pagesFetched += 1;
   pageRows = parsed.rows.length;
+  if (pageRows > (stats.maxRowsPerPage || 0)) stats.maxRowsPerPage = pageRows;
   stats.rowsParsed += pageRows;
   parsed.warnings.forEach((w) => stats.warnings.push('[' + segmentLabel + '] page ' + page + ': ' + w));
 
@@ -73,40 +105,26 @@ if (failureReason) {
       : 'no company rows and no "no results" message — either the end, or the row markup changed';
   } else if (signature && signature === state.previousSignature) {
     segmentFinished = true;
+    hitResultCap = page > 1;
     segmentFinishReason = 'page ' + page + ' repeated the previous page exactly';
+  } else if (stats.maxRowsPerPage && pageRows < stats.maxRowsPerPage) {
+    // A short page is the genuine last page of this segment.
+    collectRows();
+    segmentFinished = true;
+    segmentFinishReason = 'page ' + page + ' returned ' + pageRows + ' rows (fewer than a full page)';
   } else {
-    for (const row of parsed.rows) {
-      const key = row.edb || row.profilePath;
-      if (!key) {
-        stats.warnings.push('[' + segmentLabel + '] page ' + page + ': row with neither ЕДБ nor profile link, dropped');
-        continue;
-      }
-      if (sd.sheetKeys[key]) {
-        // Already in the sheet from an earlier run — skip without re-fetching it.
-        stats.alreadyInSheetSkipped += 1;
-        sd.seenKeys[key] = true;
-        alreadyInSheet += 1;
-        continue;
-      }
-      if (sd.seenKeys[key]) {
-        stats.duplicatesSkipped += 1;
-        continue;
-      }
-      sd.seenKeys[key] = true;
-      sd.collected.push({ ...row, foundOnPage: page, foundInSegment: segmentLabel, nkdFilter: segment.activityType || '' });
-      newRows += 1;
-    }
-    // Rows already in the sheet still prove the page was fresh, so only treat the
-    // page as exhausted when it produced nothing new AND nothing already known.
-    if (newRows === 0 && alreadyInSheet === 0) {
-      segmentFinished = true;
-      segmentFinishReason = 'page ' + page + ' contained only companies already collected in this run';
-    }
+    collectRows();
   }
+
+  // Note: "every company on this page was already collected" is deliberately NOT
+  // an end-of-segment condition. Once a band has been split, the halves re-return
+  // companies the parent band already collected, and treating that as the end
+  // would stop each half on its first page.
 
   if (!segmentFinished && page >= maxPages) {
     segmentFinished = true;
-    segmentFinishReason = 'per-segment page cap (' + maxPages + ') reached — raise maxPages if this was not the real end';
+    hitResultCap = true;
+    segmentFinishReason = 'per-segment page cap (' + maxPages + ') reached';
   }
 }
 
@@ -126,6 +144,38 @@ if (!stop && segmentFinished) {
     'segment ' + (segmentIndex + 1) + '/' + segments.length +
     ' [' + segmentLabel + '] finished after ' + page + ' page(s): ' + segmentFinishReason
   );
+
+  // The site caps how far a search can be paged, and orders results by revenue
+  // descending — so a segment that stops at the cap is hiding its smallest
+  // companies. Halve its revenue band and sweep both halves instead.
+  if (hitResultCap) {
+    stats.segmentsHitResultCap += 1;
+
+    const autoSplit = cfg.autoSplitTruncatedBands !== false;
+    const halves = autoSplit
+      ? splitSegmentByRevenue(segment, Number(cfg.minBandWidth) || 1000)
+      : null;
+
+    if (halves && segments.length + 2 <= maxSegments) {
+      segments.splice(segmentIndex + 1, 0, halves[0], halves[1]);
+      stats.segmentsSplit += 1;
+      stats.warnings.push(
+        '[' + segmentLabel + '] hit the site result cap with a full page — split into ' +
+        describeSegment(halves[0]) + ' and ' + describeSegment(halves[1])
+      );
+    } else {
+      stats.segmentsTruncated += 1;
+      stats.truncatedSegments.push(segmentLabel);
+      stats.warnings.push(
+        '[' + segmentLabel + '] hit the site result cap and could NOT be split (' +
+        (!autoSplit ? 'auto-split disabled'
+          : (!halves ? 'no revenue band to divide, or band already too narrow'
+                     : 'segment limit of ' + maxSegments + ' reached')) +
+        ') — companies in this band are being missed'
+      );
+    }
+  }
+
   if (segmentIndex + 1 < segments.length) {
     nextSegmentIndex = segmentIndex + 1;
     nextPage = 1;
@@ -151,6 +201,8 @@ return [{
     consecutiveFailures,
     segmentFinished,
     segmentFinishReason,
+    hitResultCap,
+    segmentCount: segments.length,
     pagesFetched: stats.pagesFetched,
     lastPageRows: pageRows,
     lastPageNewRows: newRows,

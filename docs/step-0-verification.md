@@ -91,6 +91,8 @@ number rather than returning an empty list. That is expected and handled: the lo
 stops when a page repeats the previous one or contains only companies already collected.
 
 **`q5` says `TRUNCATED`** — this is the important one, and it is easy to miss.
+It was the actual outcome for НКД 61: 60 reachable companies, cutoff at 5,986,521 MKD,
+and 19 more found below it that the plain search never showed.
 
 Results come back **sorted by revenue descending**, and the site limits how many pages a
 single search can reach (`p=999` returns the last reachable page verbatim). The companies
@@ -109,6 +111,11 @@ revenueBandCount:  10
 
 Each band is then short enough to be paged to its own end, and their union is the whole
 division. `revenueBandFloor` (default `100000`) sets how wide the first `0 …` band is.
+
+`revenueBandCount` only has to be roughly right: any band that still hits the cap is
+**halved automatically at runtime** and both halves are swept. Check
+`segmentsStillTruncated` in the run summary afterwards — above `0` means a band could not
+be divided further and its companies were missed.
 
 **`q5` says `COMPLETE`** — the tail probe surfaced nothing new, so the plain search already
 reaches everything. No banding needed.
