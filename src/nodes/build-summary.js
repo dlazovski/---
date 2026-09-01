@@ -25,6 +25,7 @@ const summary = {
   segmentsAddedBySplitting: stats.segmentsSplit || 0,
   segmentsThatHitTheResultCap: stats.segmentsHitResultCap || 0,
   segmentsStillTruncated: stats.segmentsTruncated || 0,
+  segmentsWhereRevenueBandWasIgnored: stats.segmentsWithBandIgnored || 0,
   truncatedSegments: stats.truncatedSegments || [],
   rowsPerSearchPage: stats.maxRowsPerPage || 0,
   segments: segments.map((seg, i) => ({

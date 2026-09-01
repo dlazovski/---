@@ -86,25 +86,26 @@ descending** and clamps `p` to the 3rd page, so a search can only ever reach
 revenue 0–5,000,000 returned **19 companies, none of which the plain search had shown**.
 
 A capped search is indistinguishable from a complete one — the rows look fine, there
-is just silently less of them. So the sweep now **detects the cap and halves the
-revenue band**, sweeping both halves, repeating until every band fits under it. That
-needs `revenueFilterMode: range`, because a band is what gets split.
+is just silently less of them. The sweep handles this by itself:
 
-**Recommended configuration for a whole division:**
+1. A segment that stops at the cap **while its last page was still full** has been
+   capped, not exhausted.
+2. If it carries a revenue band, the band is **halved** and both halves are swept.
+3. If it carries no band at all, one is **introduced** — `0` up to the largest revenue
+   the search actually returned, split into `revenueBandCount` bands.
+4. This repeats until every band fits under the cap.
 
-```
-nkdCodes:                 61
-revenueFilterMode:        range
-revenueFrom:              0
-revenueTo:                20000000000
-revenueBandCount:         8
-autoSplitTruncatedBands:  true
-```
+**No configuration is needed for this.** Running with the revenue filter off is fine:
+the first search hits the cap, banding is introduced automatically, and the sweep
+continues. Setting `revenueFilterMode: range` up front just skips step 3.
 
-`revenueBandCount` only needs to be in the right ballpark — splitting corrects it at
-runtime. Afterwards, check **`segmentsStillTruncated`** in the summary: anything above
-`0` means a band hit the cap and could not be divided further, and those companies were
-not collected.
+Afterwards, check two fields in the summary:
+
+- **`segmentsStillTruncated`** — above `0` means a band hit the cap and could not be
+  divided further, so those companies were not collected. `truncationWarning` names them.
+- **`segmentsWhereRevenueBandWasIgnored`** — above `0` means rows came back *outside*
+  the revenue band that was asked for, so the band is not reaching the site. Splitting
+  stops in that case rather than re-running the same search hundreds of times.
 
 ### CompanyWall's own phone number
 
@@ -274,7 +275,8 @@ Set in the **Config** node.
 | `enforceNkdMatch` | `true` | Skip companies whose profile НКД does not fall under the requested code |
 | `cityMode` | `municipality` | `municipality` = the confirmed rule (Skopje companies get `Центар`/`Аеродром`); `settlement` = the city proper (`Скопје`) |
 | `revenueBandFloor` | `100000` | Width of the first band when `revenueFrom` is `0` |
-| `autoSplitTruncatedBands` | `true` | Halve a revenue band that hits the site's result cap and sweep both halves |
+| `autoSplitTruncatedBands` | `true` | Halve a band that hits the site's result cap — or introduce one if there is none — and sweep the pieces |
+| `autoBandCeiling` | `100000000000` | Ceiling used when banding is introduced mid-run and no revenue could be read from the rows |
 | `minBandWidth` | `1000` | Stop splitting once a band is this narrow |
 | `maxSegments` | `400` | Hard ceiling on segments, so splitting cannot run away |
 | `balanceYear` | `2025` | `bly` — the financial year the filter applies to |
@@ -298,7 +300,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   163 tests: parser units, end-to-end simulation, structural checks.
+test/                   166 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -308,7 +310,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 163 tests, no network access needed
+npm test        # 166 tests, no network access needed
 npm run check   # both
 ```
 
@@ -329,8 +331,10 @@ npm run check   # both
   first, no authenticated URLs, no baked-in credentials.
 - **Truncation simulation** (`test/truncation.test.js`) — models the site's real
   constraint (revenue-sorted, 20 per page, `p` clamped at 3) with a 137-company
-  population, and proves the banded sweep plus auto-splitting collects **every one of
-  them**, each fetched once, while an unbanded sweep reaches only 60 and says so.
+  population, and proves the **shipped default config** collects every one of them,
+  each fetched once. It also pins the two ways this goes wrong: a band that fails to
+  reach the search URL (which once caused 1,596 requests for 137 companies), and a
+  site that ignores the band entirely.
 
 > The HTML fixtures in `test/fixtures/` are **synthetic**. They reproduce the confirmed
 > page structures but are not captures of live pages. Replacing them with real ScrapingBee

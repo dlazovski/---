@@ -1113,6 +1113,7 @@ function buildSearchSegments(config) {
     for (var j = 0; j < bands.length; j++) {
       segments.push({
         activityType: codes[i],
+        revenueFilterMode: bands[j] ? 'range' : (cfg.revenueFilterMode || 'range'),
         revenueFrom: bands[j] ? bands[j].from : undefined,
         revenueTo: bands[j] ? bands[j].to : undefined
       });
@@ -1149,9 +1150,13 @@ function splitSegmentByRevenue(segment, minWidth) {
   if (mid <= from || mid >= to) mid = from + Math.floor((to - from) / 2);
   if (mid <= from || mid >= to) return null;
 
+  // revenueFilterMode must travel with the band. buildSearchUrl merges the
+  // segment over the config, so a band that does not carry the mode inherits an
+  // "off" mode from the config and emits an unfiltered URL — every band would
+  // then return the same unfiltered result set and be split again forever.
   return [
-    Object.assign({}, seg, { revenueFrom: from, revenueTo: mid }),
-    Object.assign({}, seg, { revenueFrom: mid + 1, revenueTo: to })
+    Object.assign({}, seg, { revenueFilterMode: 'range', revenueFrom: from, revenueTo: mid }),
+    Object.assign({}, seg, { revenueFilterMode: 'range', revenueFrom: mid + 1, revenueTo: to })
   ];
 }
 

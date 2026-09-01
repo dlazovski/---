@@ -83,8 +83,13 @@ function profileHtml(c) {
 </main><footer><p>info@companywall.com.mk 075387170</p></footer></body></html>`;
 }
 
-/** The site: filter, sort by revenue descending, paginate, clamp the page. */
-function fakeSite(url, stats) {
+/**
+ * The site: filter, sort by revenue descending, paginate, clamp the page.
+ * `options.ignoreRevenueFilter` models a revenue band that never reaches the
+ * search — every band then returns the same unfiltered result set.
+ */
+function fakeSite(url, stats, options) {
+  const siteOptions = options || {};
   if (url.includes('/prebaruvanje')) {
     stats.searchRequests++;
     const at = decodeURIComponent((url.match(/[?&]at=([^&]*)/) || [])[1] || '');
@@ -95,7 +100,9 @@ function fakeSite(url, stats) {
     const revenueFiltered = fromMatch && !(from === 0 && to === 0);
 
     let rows = COMPANIES.filter((c) => !at || c.nkd.startsWith(at + '.'));
-    if (revenueFiltered) rows = rows.filter((c) => c.revenue >= from && c.revenue <= to);
+    if (revenueFiltered && !siteOptions.ignoreRevenueFilter) {
+      rows = rows.filter((c) => c.revenue >= from && c.revenue <= to);
+    }
     rows.sort((a, b) => b.revenue - a.revenue);
 
     const effectivePage = Math.min(page, PAGE_CAP);
@@ -131,11 +138,12 @@ function configFromWorkflow(overrides) {
   return [{ json: { ...json, nkdCodes: '61', ...(overrides || {}) } }];
 }
 
-function runSweep(configOverrides) {
+function runSweep(configOverrides, siteOptions) {
   const staticData = {};
   const nodes = {};
   const stats = { searchRequests: 0, profileRequests: 0 };
   const sheetRows = [];
+  const searchUrls = [];
 
   nodes['Config'] = configFromWorkflow(configOverrides);
   nodes['Read Existing Sheet'] = [{ json: {} }];
@@ -146,7 +154,9 @@ function runSweep(configOverrides) {
   for (;;) {
     if (++guard > 4000) throw new Error('sweep did not terminate');
     nodes['Build Search URL'] = runCode('Build Search URL', { input: state, nodes, staticData });
-    const response = fakeSite(nodes['Build Search URL'][0].json.searchUrl, stats);
+    const searchUrl = nodes['Build Search URL'][0].json.searchUrl;
+    searchUrls.push(searchUrl);
+    const response = fakeSite(searchUrl, stats, siteOptions);
     nodes['Parse Search Results'] = runCode('Parse Search Results', { input: [response], nodes, staticData });
     state = nodes['Parse Search Results'];
     if (state[0].json.stop) break;
@@ -155,7 +165,7 @@ function runSweep(configOverrides) {
   const companies = runCode('Dedupe Companies', { input: state, nodes, staticData });
   for (const company of companies) {
     nodes['Loop Over Companies'] = [company];
-    const response = fakeSite(company.json.profileUrl, stats);
+    const response = fakeSite(company.json.profileUrl, stats, siteOptions);
     nodes['Parse Profile'] = runCode('Parse Profile', { input: [response], nodes, staticData });
     const record = nodes['Parse Profile'];
     if (!record[0].json._write) continue;
@@ -163,33 +173,72 @@ function runSweep(configOverrides) {
   }
 
   const summary = runCode('Build Summary', { input: [], nodes, staticData })[0].json;
-  return { companies: companies.map((c) => c.json), sheetRows, summary, stats, staticData };
+  return { companies: companies.map((c) => c.json), sheetRows, summary, stats, staticData, searchUrls };
 }
 
-// --- the baseline: this is the problem being solved --------------------------
+// --- the default config must reach everything on its own ---------------------
 
 const UNBANDED = runSweep({ revenueFilterMode: 'off-zero' });
 
-test('without revenue banding the cap hides most of the population', () => {
-  assert.strictEqual(UNBANDED.summary.companiesQueued, PAGE_SIZE * PAGE_CAP);
-  assert.ok(COMPANIES.length > UNBANDED.summary.companiesQueued,
-    'the fixture must be larger than the cap for this test to mean anything');
+test('the shipped default reaches every company without being reconfigured', () => {
+  // Running with the revenue filter off used to return exactly the cap and stop,
+  // which looks indistinguishable from a complete result set. Hitting the cap now
+  // introduces revenue banding by itself.
+  assert.strictEqual(UNBANDED.summary.companiesQueued, COMPANIES.length);
+  assert.strictEqual(UNBANDED.summary.segmentsStillTruncated, 0);
 });
 
-test('an unbanded sweep that hits the cap reports it instead of looking complete', () => {
-  assert.ok(UNBANDED.summary.segmentsThatHitTheResultCap > 0, 'the cap was not detected');
-  assert.strictEqual(UNBANDED.summary.segmentsStillTruncated, 1,
-    'a segment with no revenue band cannot be split, and must be reported as truncated');
-  assert.match(UNBANDED.summary.truncationWarning || '', /could not be split further/);
+test('banding is introduced only once the cap is actually hit', () => {
+  assert.strictEqual(UNBANDED.summary.segmentsPlanned, 1, 'should start as a single unbanded search');
+  assert.strictEqual(UNBANDED.summary.segmentsThatHitTheResultCap, 1);
+  assert.ok(UNBANDED.summary.segmentsCompleted > 1, 'no bands were introduced');
 });
 
-test('the companies the cap hides are the smallest ones', () => {
-  const collected = new Set(UNBANDED.companies.map((c) => c.edb));
+test('an introduced band actually reaches the search URL as a revenue filter', () => {
+  // The band has to carry revenueFilterMode with it: buildSearchUrl merges the
+  // segment over the config, so a band without it inherits the config's "off"
+  // mode and emits an unfiltered URL. Every band then returns the same result
+  // set and is split again, forever.
+  const banded = UNBANDED.searchUrls.filter((u) => /dsm\[0\]\.From=\d+&dsm\[0\]\.To=[1-9]/.test(u));
+  assert.ok(banded.length > 0, 'no search URL carried a real revenue band');
+
+  // The initial segment is legitimately unfiltered while it pages to the cap.
+  // What must not happen is an unfiltered search AFTER banding was introduced —
+  // that is the signature of the band failing to reach the URL.
+  const firstBanded = UNBANDED.searchUrls.findIndex((u) => /dsm\[0\]\.To=[1-9]/.test(u));
+  const strayUnfiltered = UNBANDED.searchUrls
+    .slice(firstBanded)
+    .filter((u) => u.includes('dsm[0].From=0&dsm[0].To=0'));
+  assert.deepStrictEqual(strayUnfiltered, [], 'an unfiltered search ran after banding was introduced');
+});
+
+test('the sweep stays cheap — banding must not re-run the same search', () => {
+  // The runaway version of this bug issued 1596 search requests for 137 companies.
+  assert.ok(UNBANDED.stats.searchRequests < 40,
+    'search requests ran away: ' + UNBANDED.stats.searchRequests);
+});
+
+test('a band the site ignores is reported, not split hundreds of times', () => {
+  const run = runSweep({ revenueFilterMode: 'off-zero' }, { ignoreRevenueFilter: true });
+  assert.ok(run.summary.segmentsWhereRevenueBandWasIgnored > 0,
+    'rows outside the requested band were not noticed');
+  assert.ok(run.summary.segmentsStillTruncated > 0, 'the truncation was not reported');
+  assert.ok(run.stats.searchRequests < 60, 'splitting ran away: ' + run.stats.searchRequests);
+  assert.match(run.summary.truncationWarning || '', /NOT collected/);
+});
+
+test('with auto-splitting off, the cap is reported honestly instead', () => {
+  const run = runSweep({ revenueFilterMode: 'off-zero', autoSplitTruncatedBands: false });
+  assert.strictEqual(run.summary.companiesQueued, PAGE_SIZE * PAGE_CAP);
+  assert.strictEqual(run.summary.segmentsStillTruncated, 1);
+  assert.match(run.summary.truncationWarning || '', /could not be split further/);
+
+  // ...and the companies it misses are provably the smallest ones.
+  const collected = new Set(run.companies.map((c) => c.edb));
   const missed = COMPANIES.filter((c) => !collected.has(c.edb));
-  const collectedRevenues = COMPANIES.filter((c) => collected.has(c.edb)).map((c) => c.revenue);
+  const kept = COMPANIES.filter((c) => collected.has(c.edb)).map((c) => c.revenue);
   assert.ok(missed.length > 0);
-  assert.ok(Math.max(...missed.map((c) => c.revenue)) < Math.min(...collectedRevenues),
-    'every missed company should be smaller than every collected one');
+  assert.ok(Math.max(...missed.map((c) => c.revenue)) < Math.min(...kept));
 });
 
 // --- the fix ------------------------------------------------------------------

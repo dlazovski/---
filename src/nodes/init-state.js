@@ -24,6 +24,8 @@ sd.stats = {
   segmentsTruncated: 0,
   truncatedSegments: [],
   maxRowsPerPage: 0,
+  maxRevenueSeen: 0,
+  segmentsWithBandIgnored: 0,
   nkdMismatched: 0,
   nkdUnknown: 0,
   pagesFetched: 0,

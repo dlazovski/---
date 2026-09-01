@@ -22,6 +22,9 @@ module.exports = function buildMainWorkflow() {
     { name: 'autoSplitTruncatedBands', value: true, type: 'boolean' },
     { name: 'minBandWidth', value: 1000, type: 'number' },
     { name: 'maxSegments', value: 400, type: 'number' },
+    // Ceiling used when banding has to be introduced mid-run and no revenue was
+    // readable from the results rows.
+    { name: 'autoBandCeiling', value: 100000000000, type: 'number' },
     // Skip companies whose profile НКД does not fall under the requested code.
     { name: 'enforceNkdMatch', value: true, type: 'boolean' },
     // Google Sheet target — must be filled in before running
@@ -119,10 +122,10 @@ module.exports = function buildMainWorkflow() {
       'paged so far — measured at **3 pages / 60 companies**. Everything below that cutoff ' +
       'is invisible, and a capped search looks exactly like a complete one.\n\n' +
       'So when a segment stops at the cap while its last page was still full, its revenue ' +
-      'band is **halved automatically** and both halves are swept instead. This repeats until ' +
-      'each band fits under the cap.\n\n' +
-      'This needs `revenueFilterMode: range` — a band is what gets split. Check ' +
-      '`segmentsStillTruncated` in the summary: anything above 0 means companies were missed.',
+      'band is **halved automatically**. If it has no band at all, one is **introduced** — ' +
+      '0 up to the largest revenue the search returned. This repeats until every band fits.\n\n' +
+      '**No configuration needed.** Check `segmentsStillTruncated` in the summary: anything ' +
+      'above 0 means companies were missed.',
       [1660, 20], 470, 360, 4),
 
     B.stickyNote('Note — rate limiting',

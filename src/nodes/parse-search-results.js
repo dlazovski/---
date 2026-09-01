@@ -46,6 +46,7 @@ let alreadyInSheet = 0;
 let failureReason = error;
 let parsed = null;
 let hitResultCap = false;
+let rowsOutsideBand = 0;
 
 function collectRows() {
   for (const row of parsed.rows) {
@@ -90,6 +91,23 @@ if (failureReason) {
   stats.pagesFetched += 1;
   pageRows = parsed.rows.length;
   if (pageRows > (stats.maxRowsPerPage || 0)) stats.maxRowsPerPage = pageRows;
+
+  // Results are ordered by revenue descending, so the first page of a segment
+  // carries the largest revenue in it. That is the ceiling to band up to if this
+  // segment turns out to need banding.
+  for (const row of parsed.rows) {
+    if (typeof row.revenue === 'number' && Number.isFinite(row.revenue)) {
+      if (row.revenue > (stats.maxRevenueSeen || 0)) stats.maxRevenueSeen = row.revenue;
+
+      // Invariant: a segment asking for a revenue band must get rows inside it.
+      // Rows outside mean the band is not reaching the site at all, and splitting
+      // it further would just repeat the same unfiltered search forever.
+      if (segment.revenueTo !== undefined
+          && (row.revenue > Number(segment.revenueTo) || row.revenue < Number(segment.revenueFrom))) {
+        rowsOutsideBand += 1;
+      }
+    }
+  }
   stats.rowsParsed += pageRows;
   parsed.warnings.forEach((w) => stats.warnings.push('[' + segmentLabel + '] page ' + page + ': ' + w));
 
@@ -152,25 +170,59 @@ if (!stop && segmentFinished) {
     stats.segmentsHitResultCap += 1;
 
     const autoSplit = cfg.autoSplitTruncatedBands !== false;
-    const halves = autoSplit
-      ? splitSegmentByRevenue(segment, Number(cfg.minBandWidth) || 1000)
-      : null;
+    let replacement = null;
+    let how = '';
 
-    if (halves && segments.length + 2 <= maxSegments) {
-      segments.splice(segmentIndex + 1, 0, halves[0], halves[1]);
+    // A band whose rows come back outside it is not being applied by the site.
+    // Splitting is pointless in that case and would burn hundreds of requests
+    // re-running the same unfiltered search.
+    const bandIgnored = rowsOutsideBand > 0;
+    if (bandIgnored) stats.segmentsWithBandIgnored += 1;
+
+    if (autoSplit && !bandIgnored) {
+      const halves = splitSegmentByRevenue(segment, Number(cfg.minBandWidth) || 1000);
+      if (halves) {
+        replacement = halves;
+        how = 'split into ' + describeSegment(halves[0]) + ' and ' + describeSegment(halves[1]);
+      } else if (segment.revenueFrom === undefined) {
+        // The segment carries no revenue band at all, so there is nothing to
+        // halve — introduce one instead of giving up. Without this, running with
+        // the revenue filter off silently returns exactly the site's cap and
+        // stops, which looks like a complete result set.
+        const ceiling = Number(stats.maxRevenueSeen) > 0
+          ? Number(stats.maxRevenueSeen)
+          : (Number(cfg.autoBandCeiling) || 100000000000);
+        const bands = buildRevenueBands(
+          0, ceiling,
+          Number(cfg.revenueBandCount) || 8,
+          Number(cfg.revenueBandFloor)
+        );
+        if (bands.length > 1) {
+          replacement = bands.map((b) => ({
+            ...segment,
+            revenueFilterMode: 'range',
+            revenueFrom: b.from,
+            revenueTo: b.to
+          }));
+          how = 'banded by revenue into ' + bands.length + ' segments, 0–' + ceiling;
+        }
+      }
+    }
+
+    if (replacement && segments.length + replacement.length <= maxSegments) {
+      segments.splice(segmentIndex + 1, 0, ...replacement);
       stats.segmentsSplit += 1;
-      stats.warnings.push(
-        '[' + segmentLabel + '] hit the site result cap with a full page — split into ' +
-        describeSegment(halves[0]) + ' and ' + describeSegment(halves[1])
-      );
+      stats.warnings.push('[' + segmentLabel + '] hit the site result cap — ' + how);
     } else {
       stats.segmentsTruncated += 1;
       stats.truncatedSegments.push(segmentLabel);
       stats.warnings.push(
-        '[' + segmentLabel + '] hit the site result cap and could NOT be split (' +
+        '[' + segmentLabel + '] hit the site result cap and could NOT be divided (' +
         (!autoSplit ? 'auto-split disabled'
-          : (!halves ? 'no revenue band to divide, or band already too narrow'
-                     : 'segment limit of ' + maxSegments + ' reached')) +
+          : (bandIgnored ? rowsOutsideBand + ' row(s) came back outside the requested revenue band — '
+                           + 'the band is not being applied, so splitting it further would not help'
+          : (!replacement ? 'band already too narrow to divide'
+                          : 'segment limit of ' + maxSegments + ' reached'))) +
         ') — companies in this band are being missed'
       );
     }
