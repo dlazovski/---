@@ -17,8 +17,10 @@ sd.stats = {
   existingEdbSeeded: 0,
   existingRowsWithUnreadableEdb: 0,
   alreadyInSheetSkipped: 0,
-  bandsPlanned: 0,
-  bandsCompleted: 0,
+  segmentsPlanned: 0,
+  segmentsCompleted: 0,
+  nkdMismatched: 0,
+  nkdUnknown: 0,
   pagesFetched: 0,
   searchRequestFailures: 0,
   rowsParsed: 0,
@@ -73,16 +75,27 @@ if (sd.stats.existingRowsInSheet > 0 && sd.stats.existingEdbSeeded === 0) {
   );
 }
 
-// --- plan the revenue band sweep --------------------------------------------
-const bands = buildRevenueBands(cfg.revenueFrom, cfg.revenueTo, cfg.revenueBandCount);
-sd.bands = bands;
-sd.stats.bandsPlanned = bands.length;
+// --- plan the sweep ---------------------------------------------------------
+// One segment per (НКД code x revenue band). Each is paged to its own end, so
+// splitting the work is both the filter and the way past the site's pagination
+// depth cap.
+const segments = buildSearchSegments(cfg);
+sd.segments = segments;
+sd.stats.segmentsPlanned = segments.length;
+
+const nkdCodes = parseNkdCodes(cfg.nkdCodes);
+sd.nkdCodes = nkdCodes;
+
+if (nkdCodes.length === 0) {
+  sd.stats.warnings.push('no НКД codes configured — searching all activities');
+}
 
 return [{
   json: {
-    bandIndex: 0,
-    band: bands[0],
-    bandCount: bands.length,
+    segmentIndex: 0,
+    segment: segments[0],
+    segmentLabel: describeSegment(segments[0]),
+    segmentCount: segments.length,
     page: Number(cfg.startPage) || 1,
     stop: false,
     stopReason: '',

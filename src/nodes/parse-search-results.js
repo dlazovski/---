@@ -1,13 +1,13 @@
 // @requires-parsers
 // Extract company rows from one search-results page, then decide whether to take
-// the next page, move to the next revenue band, or finish.
+// the next page, move to the next segment (НКД code x revenue band), or finish.
 //
-// The end-of-band condition covers several possible site behaviours, because
+// The end-of-segment condition covers several possible site behaviours, because
 // which one applies is confirmed only by observation:
 //   1. the page yields zero company rows;
 //   2. the page repeats the previous page exactly (site clamps `p`);
 //   3. every company on the page was already collected;
-//   4. a per-band safety cap on page count.
+//   4. a per-segment safety cap on page count.
 // Whole-run stops: the company cap, or too many consecutive request failures.
 
 const cfg = $('Config').first().json;
@@ -17,9 +17,10 @@ const stats = sd.stats;
 
 const { status, html, error } = readHttpItem($input.first());
 
-const bands = sd.bands;
-const bandIndex = Number(state.bandIndex) || 0;
-const band = bands[bandIndex];
+const segments = sd.segments;
+const segmentIndex = Number(state.segmentIndex) || 0;
+const segment = segments[segmentIndex];
+const segmentLabel = describeSegment(segment);
 const page = Number(state.page) || 1;
 const url = state.searchUrl;
 
@@ -30,8 +31,8 @@ const maxConsecutiveFailures = Number(cfg.maxConsecutiveFailures) || 3;
 let consecutiveFailures = Number(state.consecutiveFailures) || 0;
 let stop = false;
 let stopReason = '';
-let bandFinished = false;
-let bandFinishReason = '';
+let segmentFinished = false;
+let segmentFinishReason = '';
 let signature = state.previousSignature || '';
 let pageRows = 0;
 let newRows = 0;
@@ -47,7 +48,7 @@ if (!failureReason) {
 if (failureReason) {
   // Log and move on: one bad page must not kill the run.
   stats.searchRequestFailures += 1;
-  stats.failedUrls.push({ stage: 'search', band: bandIndex + 1, page, url, status, reason: failureReason });
+  stats.failedUrls.push({ stage: 'search', segment: segmentLabel, page, url, status, reason: failureReason });
   consecutiveFailures += 1;
   if (consecutiveFailures >= maxConsecutiveFailures) {
     stop = true;
@@ -58,7 +59,7 @@ if (failureReason) {
   stats.pagesFetched += 1;
   pageRows = parsed.rows.length;
   stats.rowsParsed += pageRows;
-  parsed.warnings.forEach((w) => stats.warnings.push('band ' + (bandIndex + 1) + ' page ' + page + ': ' + w));
+  parsed.warnings.forEach((w) => stats.warnings.push('[' + segmentLabel + '] page ' + page + ': ' + w));
 
   signature = parsed.rows
     .map((r) => r.edb || r.profilePath)
@@ -66,18 +67,18 @@ if (failureReason) {
     .join('|');
 
   if (pageRows === 0) {
-    bandFinished = true;
-    bandFinishReason = parsed.noResultsMessage
-      ? 'no results for this band'
+    segmentFinished = true;
+    segmentFinishReason = parsed.noResultsMessage
+      ? 'no results for this segment'
       : 'no company rows and no "no results" message — either the end, or the row markup changed';
   } else if (signature && signature === state.previousSignature) {
-    bandFinished = true;
-    bandFinishReason = 'page ' + page + ' repeated the previous page exactly';
+    segmentFinished = true;
+    segmentFinishReason = 'page ' + page + ' repeated the previous page exactly';
   } else {
     for (const row of parsed.rows) {
       const key = row.edb || row.profilePath;
       if (!key) {
-        stats.warnings.push('band ' + (bandIndex + 1) + ' page ' + page + ': row with neither ЕДБ nor profile link, dropped');
+        stats.warnings.push('[' + segmentLabel + '] page ' + page + ': row with neither ЕДБ nor profile link, dropped');
         continue;
       }
       if (sd.sheetKeys[key]) {
@@ -92,20 +93,20 @@ if (failureReason) {
         continue;
       }
       sd.seenKeys[key] = true;
-      sd.collected.push({ ...row, foundOnPage: page, foundInBand: bandIndex + 1 });
+      sd.collected.push({ ...row, foundOnPage: page, foundInSegment: segmentLabel, nkdFilter: segment.activityType || '' });
       newRows += 1;
     }
     // Rows already in the sheet still prove the page was fresh, so only treat the
     // page as exhausted when it produced nothing new AND nothing already known.
     if (newRows === 0 && alreadyInSheet === 0) {
-      bandFinished = true;
-      bandFinishReason = 'page ' + page + ' contained only companies already collected in this run';
+      segmentFinished = true;
+      segmentFinishReason = 'page ' + page + ' contained only companies already collected in this run';
     }
   }
 
-  if (!bandFinished && page >= maxPages) {
-    bandFinished = true;
-    bandFinishReason = 'per-band page cap (' + maxPages + ') reached — raise maxPages if this was not the real end';
+  if (!segmentFinished && page >= maxPages) {
+    segmentFinished = true;
+    segmentFinishReason = 'per-segment page cap (' + maxPages + ') reached — raise maxPages if this was not the real end';
   }
 }
 
@@ -114,24 +115,24 @@ if (!stop && maxCompanies > 0 && sd.collected.length >= maxCompanies) {
   stopReason = 'maxCompanies cap (' + maxCompanies + ') reached';
 }
 
-// --- advance: next page, next band, or done ---------------------------------
-let nextBandIndex = bandIndex;
+// --- advance: next page, next segment, or done ------------------------------
+let nextSegmentIndex = segmentIndex;
 let nextPage = page + 1;
 let nextSignature = signature;
 
-if (!stop && bandFinished) {
-  stats.bandsCompleted += 1;
+if (!stop && segmentFinished) {
+  stats.segmentsCompleted += 1;
   stats.warnings.push(
-    'band ' + (bandIndex + 1) + '/' + bands.length +
-    ' (' + band.from + '–' + band.to + ') finished after ' + page + ' page(s): ' + bandFinishReason
+    'segment ' + (segmentIndex + 1) + '/' + segments.length +
+    ' [' + segmentLabel + '] finished after ' + page + ' page(s): ' + segmentFinishReason
   );
-  if (bandIndex + 1 < bands.length) {
-    nextBandIndex = bandIndex + 1;
+  if (segmentIndex + 1 < segments.length) {
+    nextSegmentIndex = segmentIndex + 1;
     nextPage = 1;
     nextSignature = '';
   } else {
     stop = true;
-    stopReason = 'all ' + bands.length + ' revenue band(s) swept; last band finished: ' + bandFinishReason;
+    stopReason = 'all ' + segments.length + ' segment(s) swept; last one finished: ' + segmentFinishReason;
   }
 }
 
@@ -140,15 +141,16 @@ const sample = (parsed && parsed.rows.length) ? parsed.rows[0] : null;
 return [{
   json: {
     ...state,
-    bandIndex: nextBandIndex,
-    band: bands[nextBandIndex],
+    segmentIndex: nextSegmentIndex,
+    segment: segments[nextSegmentIndex],
+    segmentLabel: describeSegment(segments[nextSegmentIndex]),
     page: stop ? page : nextPage,
     stop,
     stopReason,
     previousSignature: nextSignature,
     consecutiveFailures,
-    bandFinished,
-    bandFinishReason,
+    segmentFinished,
+    segmentFinishReason,
     pagesFetched: stats.pagesFetched,
     lastPageRows: pageRows,
     lastPageNewRows: newRows,

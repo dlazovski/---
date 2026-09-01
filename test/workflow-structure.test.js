@@ -159,14 +159,17 @@ for (const [label, wf] of Object.entries(WORKFLOWS)) {
     assert.strictEqual(renderJs.value, 'false');
   });
 
-  test(`[${label}] the revenue filter is 5,000,000–400,000,000 with no area or industry restriction`, () => {
+  test(`[${label}] the search is nationwide, filtered by НКД, with no revenue restriction`, () => {
     const cfg = byName(wf, 'Config').parameters.assignments.assignments;
     const get = (name) => (cfg.find((a) => a.name === name) || {}).value;
-    assert.strictEqual(get('revenueFrom'), 5000000);
-    assert.strictEqual(get('revenueTo'), 400000000);
+    // Nationwide: no region restriction.
     assert.strictEqual(get('area'), '');
     assert.strictEqual(get('subarea'), '');
-    assert.strictEqual(get('activityType'), '');
+    // The industry filter is driven by nkdCodes, sent as `at=`.
+    assert.ok(cfg.some((a) => a.name === 'nkdCodes'), 'Config has no nkdCodes field');
+    // Revenue filtering is off by default.
+    assert.ok(['off-zero', 'off-omit'].includes(get('revenueFilterMode')),
+      'revenueFilterMode should default to one of the "off" forms, got: ' + get('revenueFilterMode'));
   });
 
   test(`[${label}] no credential IDs are baked into the exported workflow`, () => {
@@ -212,22 +215,42 @@ test('[main] the sheet read happens before any company is fetched', () => {
   }
 });
 
-test('[main] the revenue band sweep is configured and covers the full range', () => {
+test('[main] the shipped config yields exactly one segment per НКД code', () => {
   const cfg = WORKFLOWS.main.nodes.find((n) => n.name === 'Config').parameters.assignments.assignments;
-  const bandCount = cfg.find((a) => a.name === 'revenueBandCount');
-  assert.ok(bandCount, 'Config has no revenueBandCount field');
-  assert.ok(bandCount.value >= 1, 'revenueBandCount must be at least 1');
+  const get = (name) => (cfg.find((a) => a.name === name) || {}).value;
+
+  const { buildSearchSegments } = require('../src/lib/parsers.js');
+  const segments = buildSearchSegments({
+    nkdCodes: '46, 47',
+    revenueFilterMode: get('revenueFilterMode'),
+    revenueFrom: get('revenueFrom'),
+    revenueTo: get('revenueTo'),
+    revenueBandCount: get('revenueBandCount')
+  });
+
+  assert.strictEqual(segments.length, 2, 'revenue banding should not multiply segments while it is off');
+  assert.deepStrictEqual(segments.map((s) => s.activityType), ['46', '47']);
+  assert.ok(segments.every((s) => s.revenueFrom === undefined), 'a revenue bound survived into a segment');
+});
+
+test('[main] revenue banding still covers the full range if it is switched back on', () => {
+  const cfg = WORKFLOWS.main.nodes.find((n) => n.name === 'Config').parameters.assignments.assignments;
+  const get = (name) => (cfg.find((a) => a.name === name) || {}).value;
 
   const { buildRevenueBands } = require('../src/lib/parsers.js');
-  const from = cfg.find((a) => a.name === 'revenueFrom').value;
-  const to = cfg.find((a) => a.name === 'revenueTo').value;
-  const bands = buildRevenueBands(from, to, bandCount.value);
+  const bands = buildRevenueBands(get('revenueFrom'), get('revenueTo'), get('revenueBandCount'));
 
-  assert.strictEqual(bands[0].from, from);
-  assert.strictEqual(bands[bands.length - 1].to, to);
+  assert.strictEqual(bands[0].from, get('revenueFrom'));
+  assert.strictEqual(bands[bands.length - 1].to, get('revenueTo'));
   for (let i = 1; i < bands.length; i++) {
     assert.strictEqual(bands[i].from, bands[i - 1].to + 1, 'bands are not contiguous');
   }
+});
+
+test('[main] a run cannot start against an unreplaced НКД placeholder without it being obvious', () => {
+  const cfg = WORKFLOWS.main.nodes.find((n) => n.name === 'Config').parameters.assignments.assignments;
+  const nkd = cfg.find((a) => a.name === 'nkdCodes').value;
+  assert.match(nkd, /PUT-YOUR/, 'nkdCodes should ship as a placeholder the user must replace');
 });
 
 test('[main] the sheet ID is an obvious placeholder, not a stale real ID', () => {

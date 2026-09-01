@@ -71,21 +71,52 @@ if (failure) {
 }
 
 stats.profilesOk += 1;
+
+// The `at=` parameter's behaviour is unverified, so every profile is checked
+// against the НКД filter its search segment used. A filter that is silently
+// ignored shows up here as a wall of mismatches instead of thousands of
+// unwanted rows in the sheet.
+const nkdFilter = company.nkdFilter || '';
+const nkdMatch = nkdMatchesFilter(parsed.activityCode, nkdFilter);
+let nkdSkip = false;
+
+if (nkdFilter) {
+  if (nkdMatch === null) {
+    stats.nkdUnknown += 1;
+  } else if (nkdMatch === false) {
+    stats.nkdMismatched += 1;
+    // Only skip when the code was read successfully and genuinely does not match;
+    // an unreadable code must never silently drop an otherwise good company.
+    nkdSkip = cfg.enforceNkdMatch !== false;
+    if (nkdSkip) {
+      stats.rowsSkipped += 1;
+      stats.warnings.push(
+        (company.edb || company.name) + ': НКД ' + parsed.activityCode +
+        ' does not match the requested filter ' + nkdFilter + ' — row skipped'
+      );
+    }
+  }
+}
+
 parsed.warnings.forEach((w) => {
   if (w.indexOf('no phone') === 0 || w.indexOf('no e-mail') === 0 || w.indexOf('no Сопственик') === 0) return;
   stats.warnings.push((company.edb || company.name) + ': ' + w);
 });
 
-if (!parsed.phones.length) stats.noPhone += 1;
-if (!parsed.emails.length) stats.noEmail += 1;
-if (parsed.needsLica) stats.licaFallbacks += 1;
+if (!nkdSkip) {
+  if (!parsed.phones.length) stats.noPhone += 1;
+  if (!parsed.emails.length) stats.noEmail += 1;
+  if (parsed.needsLica) stats.licaFallbacks += 1;
+}
 
 return [{
   json: {
     ...base,
-    _write: true,
-    _needsLica: parsed.needsLica === true,
+    _write: !nkdSkip,
+    _needsLica: parsed.needsLica === true && !nkdSkip,
     _failure: '',
+    _nkdFilter: nkdFilter,
+    _nkdMatch: nkdMatch,
     _people: parsed.people,
     _contactPersonRole: parsed.contactPersonRole,
     _phoneSource: parsed.phoneSource,

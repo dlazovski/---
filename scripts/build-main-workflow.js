@@ -1,6 +1,6 @@
 'use strict';
 
-/* Main workflow: nationwide revenue-filtered scrape -> Google Sheet. */
+/* Main workflow: nationwide НКД-filtered company scrape -> Google Sheet. */
 
 const B = require('./build.js');
 
@@ -12,9 +12,11 @@ module.exports = function buildMainWorkflow() {
     { name: 'maxCompanies', value: 0, type: 'number' },
     { name: 'maxConsecutiveFailures', value: 3, type: 'number' },
     { name: 'writePartialRows', value: false, type: 'boolean' },
-    // Sweep the same overall revenue range in slices, so each sub-search can be
-    // paged to its own end. Set to 1 for a single undivided sweep.
+    // Only used when revenueFilterMode is 'range': sweep the revenue range in
+    // slices so each sub-search can be paged to its own end.
     { name: 'revenueBandCount', value: 8, type: 'number' },
+    // Skip companies whose profile НКД does not fall under the requested code.
+    { name: 'enforceNkdMatch', value: true, type: 'boolean' },
     // Google Sheet target — must be filled in before running
     { name: 'googleSheetId', value: 'PUT-YOUR-GOOGLE-SHEET-ID-HERE', type: 'string' },
     { name: 'googleSheetName', value: 'Sheet1', type: 'string' },
@@ -27,7 +29,7 @@ module.exports = function buildMainWorkflow() {
     B.googleSheetsReadNode('Read Existing Sheet', [120, 380]),
     B.codeNode('Init State', 'init-state.js', [340, 380]),
 
-    // --- search pagination loop (per revenue band) ---
+    // --- search sweep: one segment per НКД code x revenue band, paged to its end ---
     B.codeNode('Build Search URL', 'build-search-url.js', [560, 380]),
     B.waitNode('Wait (search)', [780, 380]),
     B.scrapingBeeNode('ScrapingBee — Search Page', '={{ $json.searchUrl }}', [1000, 380]),
@@ -59,11 +61,12 @@ module.exports = function buildMainWorkflow() {
     B.stickyNote('Note — Step 0 first',
       '## Run Step 0 first\n\n' +
       'Import and run **step0-verification.json** before this workflow.\n\n' +
-      'The search-results page markup and the end-of-results behaviour have **not** been ' +
-      'verified against the live site. The parsers here are written defensively, but the ' +
-      'Step 0 report is what confirms they match reality.\n\n' +
+      'Three things are unverified against the live site: the **`at=` (НКД) parameter**, ' +
+      'which has never been sent with a value; the results-page markup; and the ' +
+      'end-of-results behaviour. The parsers here are written defensively, but the Step 0 ' +
+      'report is what confirms they match reality.\n\n' +
       'See `docs/step-0-verification.md`.',
-      [-320, 20], 440, 300, 3),
+      [-320, 20], 450, 320, 3),
 
     B.stickyNote('Note — before running',
       '## Set these before running\n\n' +
@@ -73,8 +76,12 @@ module.exports = function buildMainWorkflow() {
       '(HTTP Query Auth, param name `api_key`).\n' +
       '4. **Read Existing Sheet** and **Google Sheets — Append** -> pick the Google credential. ' +
       'Both must point at the same tab.\n\n' +
-      '**Tip:** set `maxCompanies` to 5 for a smoke run, then back to 0 for the full run.',
-      [140, 20], 460, 320, 5),
+      '5. **Config -> nkdCodes** — the НКД division(s) to filter on, e.g. `46`. ' +
+      'Comma-separate for several.\n\n' +
+      '**Tip:** set `maxCompanies` to 5 for a smoke run, then back to 0 for the full run.\n\n' +
+      'The revenue filter is **off** (`revenueFilterMode: off-zero`). Set it to `range` to ' +
+      'bring back a restriction between `revenueFrom` and `revenueTo`.',
+      [140, 20], 470, 400, 5),
 
     B.stickyNote('Note — repeat runs',
       '## Safe to re-run\n\n' +
@@ -86,15 +93,18 @@ module.exports = function buildMainWorkflow() {
       'the run will duplicate everything you already collected.',
       [640, 20], 460, 320, 2),
 
-    B.stickyNote('Note — revenue band sweep',
-      '## Why the search runs 8 times\n\n' +
-      'A single search can only be paged as deep as the site allows, so companies past that ' +
-      'depth are unreachable. `revenueBandCount` (default **8**) sweeps the same overall ' +
-      '5,000,000–400,000,000 range in contiguous slices — the union is the identical filter, ' +
-      'but each slice is short enough to reach its own end.\n\n' +
-      'Slices are geometrically spaced, because company counts are heavily skewed toward the ' +
-      'low end of the range. Set to **1** for one undivided sweep.',
-      [1140, 20], 460, 320, 6),
+    B.stickyNote('Note — НКД filter is UNVERIFIED',
+      '## Verify `at=` before running\n\n' +
+      'The activity parameter `at=` has only ever been sent **empty**. Its accepted value ' +
+      'format is unverified — it may take an НКД code (`46`, `46.900`), or an internal ID ' +
+      'that looks nothing like one.\n\n' +
+      'Run **step0-verification.json** first: it compares a filtered search against an ' +
+      'unfiltered one and checks the НКД code on real profile pages. If `at=` is ignored, ' +
+      'this workflow would scrape **every company in the country**.\n\n' +
+      'As a second line of defence every profile is checked against the requested code and ' +
+      'non-matching rows are skipped (`enforceNkdMatch`). A high ' +
+      '`companiesNotMatchingNkdFilter` in the summary means the filter is not working.',
+      [1140, 20], 480, 380, 3),
 
     B.stickyNote('Note — rate limiting',
       '## Rate limiting\n\n' +
@@ -113,6 +123,8 @@ module.exports = function buildMainWorkflow() {
       'all — keeping the default at 2 ScrapingBee requests per company, not 3.\n\n' +
       'Companies already in the sheet are skipped **before** the profile fetch, so a ' +
       'repeat run costs nothing for them.\n\n' +
+      'Without a revenue filter an НКД division can be large — check the Step 0 volume ' +
+      'estimate before starting.\n\n' +
       'No authenticated URLs are ever requested.',
       [2760, 920], 460, 300, 7)
   ];
@@ -126,7 +138,7 @@ module.exports = function buildMainWorkflow() {
     'Wait (search)': [[{ node: 'ScrapingBee — Search Page' }]],
     'ScrapingBee — Search Page': [[{ node: 'Parse Search Results' }]],
     'Parse Search Results': [[{ node: 'More Pages?' }]],
-    // true = keep sweeping (next page, or next band); false = every band is done
+    // true = keep sweeping (next page, or next segment); false = every segment is done
     'More Pages?': [[{ node: 'Build Search URL' }], [{ node: 'Dedupe Companies' }]],
 
     'Dedupe Companies': [[{ node: 'Loop Over Companies' }]],
@@ -151,7 +163,7 @@ module.exports = function buildMainWorkflow() {
   });
 
   return {
-    name: 'CompanyWall MK — revenue-filtered company scrape',
+    name: 'CompanyWall MK — НКД-filtered company scrape',
     nodes,
     connections,
     active: false,

@@ -37,23 +37,30 @@ module.exports = function buildStep0Workflow() {
 
     B.stickyNote('Note — what this does',
       '## Step 0 — live verification (read-only)\n\n' +
-      'Writes nothing anywhere. It fetches, through ScrapingBee:\n\n' +
-      '- search pages **1, 2, 3** and a deliberately high page (**999**), to observe what ' +
-      'the real end-of-results looks like;\n' +
-      '- **4 profile pages** — one known-good control plus companies discovered by the probes.\n\n' +
-      'Roughly **8 requests**, each preceded by a 3–5 s wait: about a minute.',
-      [-320, 60], 460, 320, 4),
+      'Writes nothing anywhere. Set **Config -> nkdCodes** first, then run it.\n\n' +
+      'Through ScrapingBee it fetches:\n\n' +
+      '- an **unfiltered** search page, as the yardstick;\n' +
+      '- the **same search with `at=<your code>`** — if both return the same companies, the ' +
+      'НКД parameter is being ignored;\n' +
+      '- pages **2, 3** and a deliberately high page (**999**), to see the real end of results;\n' +
+      '- the filtered search with the **revenue block omitted**, to compare the two ways of ' +
+      'saying "no revenue filter";\n' +
+      '- **4 profile pages**, to read the actual НКД code of each company.\n\n' +
+      'Roughly **12 requests**, each preceded by a 3–5 s wait: about two minutes.',
+      [-320, 20], 480, 400, 4),
 
     B.stickyNote('Note — read the report',
       '## Reading the result\n\n' +
-      'Open the **Step 0 Report** node output. It is structured as the seven Step 0 ' +
-      'questions, each with a `verdict`.\n\n' +
-      'Report the verdicts back **before** running the main workflow — especially ' +
-      '`q5_totalVolume` (expectation was ~400 companies) and anything reading ' +
-      '`NEEDS ATTENTION`, `UNVERIFIED` or `SUSPECT`.\n\n' +
+      'Open the **Step 0 Report** node output and start with **`safeToRunFullScrape`**. ' +
+      'If it is `false`, `blockingFindings` says why.\n\n' +
+      'The one that matters most is **`q2_nkdFilterWorks`**. `FILTER IGNORED` or ' +
+      '`WRONG CODES RETURNED` means the full scrape would collect the wrong companies — ' +
+      'report it back rather than running it.\n\n' +
+      'Also check **`q5_volume`** for the estimated company count and runtime: a whole ' +
+      'НКД division with no revenue filter can be very large.\n\n' +
       'If a search page parsed 0 rows, its `rawExcerpt` holds the first 3000 bytes of ' +
       'real HTML — that is what the row selectors need to be tuned against.',
-      [1000, 480], 460, 340, 3)
+      [1000, 460], 470, 380, 3)
   ];
 
   const connections = B.buildConnections({

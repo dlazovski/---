@@ -908,28 +908,141 @@ function parseLica(html) {
 function buildSearchUrl(config, page) {
   var cfg = config || {};
   var base = cfg.baseUrl || 'https://www.companywall.com.mk';
-  var qs = [
+
+  var parts = [
     'cr=' + (cfg.currency || 'MKD'),
     'n=', 'mv=', 'r=', 'c=', 'cp=',
-    'at=' + (cfg.activityType || ''),
+    'at=' + encodeURIComponent(String(cfg.activityType || '').trim()),
     'area=' + (cfg.area || ''),
     'subarea=' + (cfg.subarea || ''),
     'sbjact=' + (cfg.subjectActive || 't'),
     'blckd=', 'dbf=', 'dbt=', 'type=',
-    'bly=' + (cfg.balanceYear || 2025),
-    'dsm[0].Code=201',
-    'dsm[0].From=' + (cfg.revenueFrom !== undefined ? cfg.revenueFrom : 5000000),
-    'dsm[0].To=' + (cfg.revenueTo !== undefined ? cfg.revenueTo : 400000000),
+    'bly=' + (cfg.balanceYear || 2025)
+  ];
+
+  // How the revenue metric slot (dsm[0], Code 201) is expressed:
+  //   'range'    - a real revenue filter between revenueFrom and revenueTo
+  //   'off-zero' - slot present but unfiltered, mirroring how the URL's own
+  //                dsm[1] slot (Code 48, From=0, To=0) expresses "no filter"
+  //   'off-omit' - the dsm[0] triplet is dropped from the URL entirely
+  // Which of the two "off" forms the site actually honours is unverified;
+  // Step 0 compares them. See docs/step-0-verification.md.
+  var mode = cfg.revenueFilterMode || 'range';
+  if (mode === 'range') {
+    parts.push(
+      'dsm[0].Code=201',
+      'dsm[0].From=' + (cfg.revenueFrom !== undefined ? cfg.revenueFrom : 5000000),
+      'dsm[0].To=' + (cfg.revenueTo !== undefined ? cfg.revenueTo : 400000000)
+    );
+  } else if (mode === 'off-zero') {
+    parts.push('dsm[0].Code=201', 'dsm[0].From=0', 'dsm[0].To=0');
+  }
+
+  parts.push(
     'dsm[1].Code=48', 'dsm[1].From=0', 'dsm[1].To=0',
     'dsm[-1].Code=0', 'dsm[-1].From=0', 'dsm[-1].To=0',
     'distinctcodes=',
     'xpnd=true',
     'p=' + (page || 1)
-  ].join('&');
-  return base + '/prebaruvanje?' + qs;
+  );
+
+  return base + '/prebaruvanje?' + parts.join('&');
 }
 
 // ---------------------------------------------------------------------------
+// НКД / НКЗ activity filter
+// ---------------------------------------------------------------------------
+
+/** Split a config string of activity codes into a clean list. */
+function parseNkdCodes(value) {
+  if (value === null || value === undefined) return [];
+  return String(value)
+    .split(/[,;\n\s]+/)
+    .map(function (c) { return c.trim(); })
+    .filter(function (c) { return c.length > 0; });
+}
+
+/** A division is two digits ("46"); a full code carries a dot ("46.900"). */
+function isNkdDivision(code) {
+  return /^\d{1,2}$/.test(String(code || '').trim());
+}
+
+/**
+ * Does an activity code from a profile page fall under the requested filter?
+ *
+ * A division filter ("46") matches any code beneath it ("46.900"). A full code
+ * matches itself. Returns null when the company's code is unknown, so callers
+ * can tell "does not match" apart from "could not tell".
+ */
+function nkdMatchesFilter(activityCode, filter) {
+  var f = String(filter === null || filter === undefined ? '' : filter).trim();
+  if (!f) return true;
+
+  var c = String(activityCode === null || activityCode === undefined ? '' : activityCode).trim();
+  if (!c) return null;
+
+  if (c === f) return true;
+  if (isNkdDivision(f)) {
+    // Compare on the division number so "46" matches "46.900" but not "460.1".
+    return c.indexOf(f + '.') === 0;
+  }
+  return c.indexOf(f) === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Search segments
+// ---------------------------------------------------------------------------
+
+/**
+ * Expand the configured filters into the list of searches to run.
+ *
+ * A segment is one (activity code x revenue band) combination, and each is paged
+ * to its own end. This is both a filter and a paging strategy: a single search can
+ * only be paged as deep as the site allows, so splitting the work along whichever
+ * dimensions are configured makes companies past that depth reachable.
+ *
+ * With no activity codes and no revenue banding, this yields exactly one segment —
+ * the plain unfiltered search.
+ */
+function buildSearchSegments(config) {
+  var cfg = config || {};
+
+  var codes = parseNkdCodes(cfg.nkdCodes);
+  if (!codes.length) codes = [''];
+
+  var bands;
+  if ((cfg.revenueFilterMode || 'range') === 'range') {
+    bands = buildRevenueBands(cfg.revenueFrom, cfg.revenueTo, cfg.revenueBandCount);
+  } else {
+    bands = [null];
+  }
+
+  var segments = [];
+  for (var i = 0; i < codes.length; i++) {
+    for (var j = 0; j < bands.length; j++) {
+      segments.push({
+        activityType: codes[i],
+        revenueFrom: bands[j] ? bands[j].from : undefined,
+        revenueTo: bands[j] ? bands[j].to : undefined
+      });
+    }
+  }
+  return segments;
+}
+
+/** One-line description of a segment, for logs and the run summary. */
+function describeSegment(segment) {
+  var s = segment || {};
+  var bits = [];
+  bits.push(s.activityType ? ('НКД ' + s.activityType) : 'all activities');
+  if (s.revenueFrom !== undefined && s.revenueTo !== undefined) {
+    bits.push('revenue ' + s.revenueFrom + '–' + s.revenueTo);
+  } else {
+    bits.push('any revenue');
+  }
+  return bits.join(', ');
+}
+
 // Exports (no-op inside n8n Code nodes, where `module` is not defined)
 // ---------------------------------------------------------------------------
 
@@ -961,7 +1074,12 @@ if (typeof module !== 'undefined' && module && module.exports) {
     parseSearchResults: parseSearchResults,
     parseProfile: parseProfile,
     parseLica: parseLica,
-    buildSearchUrl: buildSearchUrl
+    buildSearchUrl: buildSearchUrl,
+    parseNkdCodes: parseNkdCodes,
+    isNkdDivision: isNkdDivision,
+    nkdMatchesFilter: nkdMatchesFilter,
+    buildSearchSegments: buildSearchSegments,
+    describeSegment: describeSegment
   };
 }
 

@@ -225,10 +225,14 @@ const SEARCH_CONFIG_FIELDS = [
   { name: 'baseUrl', value: 'https://www.companywall.com.mk', type: 'string' },
   { name: 'scrapingBeeEndpoint', value: 'https://app.scrapingbee.com/api/v1/', type: 'string' },
   { name: 'renderJs', value: 'false', type: 'string' },
+  // НКД / НКЗ activity filter, sent as `at=`. Comma-separated. A two-digit
+  // division ("46") is intended to cover every code beneath it ("46.900").
+  { name: 'nkdCodes', value: 'PUT-YOUR-NKD-DIVISION-HERE', type: 'string' },
+  // 'range' | 'off-zero' | 'off-omit' — see buildSearchUrl().
+  { name: 'revenueFilterMode', value: 'off-zero', type: 'string' },
   { name: 'revenueFrom', value: 5000000, type: 'number' },
   { name: 'revenueTo', value: 400000000, type: 'number' },
   { name: 'balanceYear', value: 2025, type: 'number' },
-  { name: 'activityType', value: '', type: 'string' },
   { name: 'area', value: '', type: 'string' },
   { name: 'subarea', value: '', type: 'string' },
   { name: 'excludePhones', value: '', type: 'string' },

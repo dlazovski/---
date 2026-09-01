@@ -35,6 +35,14 @@ record.city = parsed.city;
 record.embs = parsed.embs;
 record.edb = parsed.edb;
 record.activity = parsed.activity;
+record.activityCode = parsed.activityCode;
+
+// The whole point of the filtered probes: does this company actually fall under
+// the НКД code the search was filtered by?
+record.expectedNkd = target.expectedNkd || '';
+record.nkdMatchesFilter = record.expectedNkd
+  ? nkdMatchesFilter(parsed.activityCode, record.expectedNkd)
+  : null;
 
 // Q6a: did a plain GET return the Контакти section?
 const contacts = sliceContactsSection(html);

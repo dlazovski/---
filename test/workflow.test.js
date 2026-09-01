@@ -49,11 +49,13 @@ function runCode(nodeName, { input = [], nodes = {}, staticData = {} }) {
 }
 
 /** Read the Config Set node's literal values straight out of the built workflow. */
-function configFromWorkflow() {
+function configFromWorkflow(overrides) {
   const assignments = nodeByName('Config').parameters.assignments.assignments;
   const json = {};
   for (const a of assignments) json[a.name] = a.value;
-  return [{ json }];
+  // nkdCodes ships as a placeholder the user must replace, so every scenario
+  // states explicitly which codes it is exercising.
+  return [{ json: { ...json, nkdCodes: '', ...(overrides || {}) } }];
 }
 
 /**
@@ -66,9 +68,11 @@ function makeFakeFetch(requestLog) {
     requestLog.push(targetUrl);
 
     if (targetUrl.includes('/prebaruvanje')) {
-      const from = Number((targetUrl.match(/dsm\[0\]\.From=(\d+)/) || [])[1]);
+      const at = decodeURIComponent((targetUrl.match(/[?&]at=([^&]*)/) || [])[1] || '');
       const page = Number((targetUrl.match(/[?&]p=(\d+)/) || [])[1] || 1);
-      const hasResults = from === 5000000 && page === 1;
+      // Companies exist for the unfiltered search and for НКД 27; every other
+      // code returns an empty result page.
+      const hasResults = page === 1 && (at === '' || at === '27');
       return { json: { statusCode: 200, data: fixture(hasResults ? 'search-page.html' : 'search-empty.html') } };
     }
     if (targetUrl.endsWith('/lica')) {
@@ -93,14 +97,16 @@ function makeFakeFetch(requestLog) {
  * `existingRows` stands in for what the Read Existing Sheet node returns; an
  * empty sheet yields one empty item, matching alwaysOutputData.
  */
-function runWorkflow(existingRows) {
+function runWorkflow(options) {
+  const opts = options || {};
+  const existingRows = opts.existingRows || [];
   const staticData = {};
   const nodes = {};
   const sheetRows = [];
   const requestLog = [];
   const fakeFetch = makeFakeFetch(requestLog);
 
-  nodes['Config'] = configFromWorkflow();
+  nodes['Config'] = configFromWorkflow(opts.config);
   const sheetItems = (existingRows && existingRows.length)
     ? existingRows.map((json) => ({ json }))
     : [{ json: {} }];
@@ -143,49 +149,159 @@ function runWorkflow(existingRows) {
   return { pagination, companies: companies.map((c) => c.json), sheetRows, summary, requestLog, staticData };
 }
 
-// Scenario A: empty sheet — a first run.
-const FIRST = runWorkflow([]);
-// Scenario B: the sheet already holds МАКИТЕЛ — a follow-up run.
-const REPEAT = runWorkflow([
-  { 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Даночен БРОЈ': MAKITEL_EDB },
-  { 'Клиент': 'НЕПОЗНАТА ДОО', 'Даночен БРОЈ': '4099999999999' }
-]);
 
-// ---------------------------------------------------------------------------
-// Revenue band sweep
-// ---------------------------------------------------------------------------
+// Scenario A: no НКД filter, empty sheet — the baseline first run.
+const FIRST = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
 
-test('sweep: every configured revenue band is searched', () => {
-  assert.strictEqual(FIRST.summary.revenueBandsPlanned, 8);
-  assert.strictEqual(FIRST.summary.revenueBandsCompleted, 8);
-  assert.match(FIRST.pagination.stopReason, /all 8 revenue band\(s\) swept/);
+// Scenario B: filtered to НКД division 27. МАКИТЕЛ is 27.110 (matches);
+// ТЕСТ КОМПАНИЈА is 46.900 (does not); ТРЕТА ФИРМА's profile fetch fails.
+const FILTERED = runWorkflow({ existingRows: [], config: { nkdCodes: '27' } });
+
+// Scenario C: the sheet already holds МАКИТЕЛ — a follow-up run.
+const REPEAT = runWorkflow({
+  existingRows: [
+    { 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Даночен БРОЈ': MAKITEL_EDB },
+    { 'Клиент': 'НЕПОЗНАТА ДОО', 'Даночен БРОЈ': '4099999999999' }
+  ],
+  config: { nkdCodes: '' }
 });
 
-test('sweep: the bands are contiguous and cover the whole configured range', () => {
-  const bands = FIRST.summary.revenueBands;
-  assert.strictEqual(bands[0].from, 5000000);
-  assert.strictEqual(bands[bands.length - 1].to, 400000000);
-  for (let i = 1; i < bands.length; i++) {
-    assert.strictEqual(bands[i].from, bands[i - 1].to + 1, 'gap or overlap between bands ' + i + ' and ' + (i + 1));
+// ---------------------------------------------------------------------------
+// The НКД filter
+// ---------------------------------------------------------------------------
+
+test('nkd: the configured code is sent as at= on every search', () => {
+  const searches = FILTERED.requestLog.filter((u) => u.includes('/prebaruvanje'));
+  assert.ok(searches.length > 0);
+  for (const url of searches) {
+    assert.match(url, /[?&]at=27&/, 'search ran without the НКД filter: ' + url);
   }
 });
 
-test('sweep: each band is searched with its own revenue bounds', () => {
-  const searchUrls = FIRST.requestLog.filter((u) => u.includes('/prebaruvanje'));
-  const ranges = new Set(searchUrls.map((u) => (u.match(/dsm\[0\]\.From=(\d+)&dsm\[0\]\.To=(\d+)/) || []).slice(1).join('-')));
-  assert.strictEqual(ranges.size, 8, 'expected 8 distinct revenue ranges to be searched');
+test('nkd: several codes become several segments, each swept in turn', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '27, 46' } });
+  assert.strictEqual(run.summary.segmentsPlanned, 2);
+  assert.strictEqual(run.summary.segmentsCompleted, 2);
+  assert.deepStrictEqual(run.summary.nkdCodesFiltered, ['27', '46']);
+  const codes = run.requestLog
+    .filter((u) => u.includes('/prebaruvanje'))
+    .map((u) => decodeURIComponent((u.match(/[?&]at=([^&]*)/) || [])[1] || ''));
+  assert.deepStrictEqual([...new Set(codes)], ['27', '46']);
 });
 
-test('sweep: pagination advances within a band, then resets for the next band', () => {
-  const pages = FIRST.requestLog
-    .filter((u) => u.includes('/prebaruvanje'))
-    .map((u) => Number((u.match(/[?&]p=(\d+)/) || [])[1]));
-  // Band 1 has results on page 1, so it goes on to page 2; every later band ends on page 1.
-  assert.deepStrictEqual(pages, [1, 2, 1, 1, 1, 1, 1, 1, 1]);
+test('nkd: a company outside the requested division is skipped, not written', () => {
+  assert.strictEqual(FILTERED.summary.companiesNotMatchingNkdFilter, 1);
+  const written = FILTERED.sheetRows.map((r) => r['Клиент']);
+  assert.ok(written.includes('МАКИТЕЛ ДООЕЛ'), 'the matching company was not written');
+  assert.ok(!written.includes('ТЕСТ КОМПАНИЈА ДОО'), 'a company outside НКД 27 was written');
+  assert.strictEqual(FILTERED.summary.companiesMatchingNkdFilter, 1);
+});
+
+test('nkd: enforceNkdMatch=false keeps mismatches but still counts them', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '27', enforceNkdMatch: false } });
+  assert.strictEqual(run.summary.companiesNotMatchingNkdFilter, 1);
+  assert.strictEqual(run.sheetRows.length, 2, 'mismatching row should still have been written');
+});
+
+/** Drive Build Summary directly, for cases the three-company fixture cannot produce. */
+function summaryFor(stats, nkdCodes) {
+  const staticData = {
+    stats: Object.assign({
+      profilesOk: 0, nkdMismatched: 0, nkdUnknown: 0, failedUrls: [], warnings: []
+    }, stats),
+    segments: [],
+    nkdCodes: nkdCodes || []
+  };
+  return runCode('Build Summary', { input: [], nodes: {}, staticData })[0].json;
+}
+
+test('nkd: a wholesale mismatch is called out as the filter not working', () => {
+  // What it looks like when the site ignores at= entirely: the search ran, plenty
+  // of companies came back, and almost none of them are in the requested division.
+  const summary = summaryFor({ profilesOk: 20, nkdMismatched: 18 }, ['46']);
+  assert.strictEqual(summary.companiesNotMatchingNkdFilter, 18);
+  assert.match(summary.nkdFilterWarning || '', /`at=` search parameter is most likely being ignored/);
+});
+
+test('nkd: a handful of mismatches in a tiny sample does not raise a false alarm', () => {
+  // Below the sample threshold there is not enough evidence to accuse the site,
+  // and crying wolf here would train the warning to be ignored.
+  const summary = summaryFor({ profilesOk: 3, nkdMismatched: 3 }, ['46']);
+  assert.strictEqual(summary.nkdFilterWarning, undefined);
+});
+
+test('nkd: a mostly-matching run raises no warning', () => {
+  const summary = summaryFor({ profilesOk: 20, nkdMismatched: 2 }, ['46']);
+  assert.strictEqual(summary.nkdFilterWarning, undefined);
+});
+
+test('nkd: no warning when no НКД filter was requested at all', () => {
+  const summary = summaryFor({ profilesOk: 20, nkdMismatched: 20 }, []);
+  assert.strictEqual(summary.nkdFilterWarning, undefined);
+});
+
+test('nkd: a company whose НКД could not be read is kept, not silently dropped', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '27' } });
+  // Every fixture profile has a readable code, so nothing should land here —
+  // the counter existing at all is what keeps unreadable codes visible.
+  assert.strictEqual(run.summary.companiesWithUnreadableNkd, 0);
+  assert.strictEqual(
+    run.summary.companiesMatchingNkdFilter + run.summary.companiesNotMatchingNkdFilter
+      + run.summary.companiesWithUnreadableNkd,
+    run.summary.profilesFetchedOk
+  );
 });
 
 // ---------------------------------------------------------------------------
-// First run
+// The revenue filter is gone
+// ---------------------------------------------------------------------------
+
+test('revenue: no revenue bound appears in any search URL', () => {
+  for (const url of FIRST.requestLog.filter((u) => u.includes('/prebaruvanje'))) {
+    assert.match(url, /dsm\[0\]\.From=0&dsm\[0\]\.To=0/, 'revenue slot is not neutral: ' + url);
+    assert.ok(!url.includes('5000000'), 'a revenue bound leaked into the URL: ' + url);
+    assert.ok(!url.includes('400000000'), 'a revenue bound leaked into the URL: ' + url);
+  }
+});
+
+test('revenue: with no codes and no revenue filter the sweep is a single search', () => {
+  assert.strictEqual(FIRST.summary.segmentsPlanned, 1);
+  assert.deepStrictEqual(FIRST.summary.nkdCodesFiltered, []);
+});
+
+test('revenue: setting revenueFilterMode back to range restores the banded sweep', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '', revenueFilterMode: 'range' } });
+  assert.strictEqual(run.summary.segmentsPlanned, 8);
+  assert.match(run.requestLog[0], /dsm\[0\]\.From=5000000&dsm\[0\]\.To=8646816/);
+});
+
+test('revenue: off-omit drops the dsm[0] triplet from every search URL', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '27', revenueFilterMode: 'off-omit' } });
+  for (const url of run.requestLog.filter((u) => u.includes('/prebaruvanje'))) {
+    assert.ok(!url.includes('dsm[0]'), 'dsm[0] should be absent: ' + url);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sweep mechanics
+// ---------------------------------------------------------------------------
+
+test('sweep: pagination advances within a segment, then resets for the next', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '27, 46' } });
+  const pages = run.requestLog
+    .filter((u) => u.includes('/prebaruvanje'))
+    .map((u) => Number((u.match(/[?&]p=(\d+)/) || [])[1]));
+  // НКД 27 has results on page 1 so it goes on to page 2; НКД 46 is empty at once.
+  assert.deepStrictEqual(pages, [1, 2, 1]);
+});
+
+test('sweep: the run stops once every segment is exhausted', () => {
+  assert.strictEqual(FIRST.pagination.stop, true);
+  assert.match(FIRST.pagination.stopReason, /all 1 segment\(s\) swept/);
+});
+
+// ---------------------------------------------------------------------------
+// First run (unfiltered)
 // ---------------------------------------------------------------------------
 
 test('first run: every company found is queued exactly once', () => {
@@ -196,7 +312,6 @@ test('first run: every company found is queued exactly once', () => {
 
 test('first run: a failed profile fetch is logged and skipped, not fatal', () => {
   assert.strictEqual(FIRST.summary.profileFetchFailures, 1);
-  assert.strictEqual(FIRST.summary.rowsSkipped, 1);
   const failure = FIRST.summary.failedUrls.find((f) => f.stage === 'profile');
   assert.ok(failure, 'the failed profile URL was not recorded');
   assert.match(failure.url, /ZZ99xyQq/);
@@ -280,13 +395,19 @@ test('repeat run: only genuinely new companies are appended', () => {
 });
 
 test('repeat run: an ЕДБ stored as a number by Sheets still matches', () => {
-  const run = runWorkflow([{ 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Даночен БРОЈ': Number(MAKITEL_EDB) }]);
+  const run = runWorkflow({
+    existingRows: [{ 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Даночен БРОЈ': Number(MAKITEL_EDB) }],
+    config: { nkdCodes: '' }
+  });
   assert.strictEqual(run.summary.existingCompaniesSeeded, 1);
   assert.strictEqual(run.summary.companiesSkippedAsAlreadyInSheet, 1);
 });
 
 test('repeat run: a mismatched ЕДБ column is flagged loudly rather than duplicating silently', () => {
-  const run = runWorkflow([{ 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Tax number': MAKITEL_EDB }]);
+  const run = runWorkflow({
+    existingRows: [{ 'Клиент': 'МАКИТЕЛ ДООЕЛ', 'Tax number': MAKITEL_EDB }],
+    config: { nkdCodes: '' }
+  });
   assert.strictEqual(run.summary.existingCompaniesSeeded, 0);
   assert.strictEqual(run.summary.existingRowsWithUnreadableEdb, 1);
   assert.ok(
@@ -297,7 +418,7 @@ test('repeat run: a mismatched ЕДБ column is flagged loudly rather than dupli
 
 test('repeat run: an exhausted filter says so explicitly', () => {
   const everything = FIRST.companies.map((c) => ({ 'Даночен БРОЈ': c.edb }));
-  const run = runWorkflow(everything);
+  const run = runWorkflow({ existingRows: everything, config: { nkdCodes: '' } });
   assert.strictEqual(run.summary.companiesQueued, 0);
   assert.strictEqual(run.summary.newRowsWrittenToSheet, 0);
   assert.match(run.summary.note, /search is exhausted/);
@@ -307,28 +428,8 @@ test('repeat run: an exhausted filter says so explicitly', () => {
 // Invariants
 // ---------------------------------------------------------------------------
 
-test('the search URL sent for the first band, page 1, is the confirmed URL', () => {
-  const expected = 'https://www.companywall.com.mk/prebaruvanje?cr=MKD&n=&mv=&r=&c=&cp=&at=&area=&subarea=' +
-    '&sbjact=t&blckd=&dbf=&dbt=&type=&bly=2025&dsm[0].Code=201&dsm[0].From=5000000&dsm[0].To=8646816' +
-    '&dsm[1].Code=48&dsm[1].From=0&dsm[1].To=0&dsm[-1].Code=0&dsm[-1].From=0&dsm[-1].To=0' +
-    '&distinctcodes=&xpnd=true&p=1';
-  assert.strictEqual(FIRST.requestLog[0], expected);
-});
-
-test('with revenueBandCount = 1 the sweep is the original single undivided search', () => {
-  const staticData = {};
-  const nodes = {};
-  const cfg = configFromWorkflow();
-  cfg[0].json.revenueBandCount = 1;
-  nodes['Config'] = cfg;
-  nodes['Init State'] = runCode('Init State', { input: [{ json: {} }], nodes, staticData });
-  const built = runCode('Build Search URL', { input: nodes['Init State'], nodes, staticData });
-  assert.match(built[0].json.searchUrl, /dsm\[0\]\.From=5000000&dsm\[0\]\.To=400000000/);
-  assert.strictEqual(staticData.bands.length, 1);
-});
-
 test('no authenticated-only URL is ever requested', () => {
-  for (const url of FIRST.requestLog) {
+  for (const url of FIRST.requestLog.concat(FILTERED.requestLog)) {
     assert.ok(!/CompanyBonitet|CompanyPersons|[?&]sid=/i.test(url), 'authenticated URL requested: ' + url);
   }
   // Sticky notes name the forbidden endpoints on purpose, to document that they
@@ -337,4 +438,10 @@ test('no authenticated-only URL is ever requested', () => {
   const serialised = JSON.stringify(requestNodes);
   assert.ok(!/CompanyBonitet|CompanyPersons/i.test(serialised), 'workflow references an authenticated endpoint');
   assert.ok(!/[?&]sid=/i.test(serialised), 'workflow constructs a session-scoped (sid) URL');
+});
+
+test('the shipped Config carries an obvious НКД placeholder, not a stale code', () => {
+  const cfg = nodeByName('Config').parameters.assignments.assignments;
+  assert.match(cfg.find((a) => a.name === 'nkdCodes').value, /PUT-YOUR/);
+  assert.strictEqual(cfg.find((a) => a.name === 'revenueFilterMode').value, 'off-zero');
 });

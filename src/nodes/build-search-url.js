@@ -1,19 +1,16 @@
 // @requires-parsers
-// Build the search URL for the current revenue band and page.
+// Build the search URL for the current segment (НКД code x revenue band) and page.
 //
 // The parameter list, its order and the raw (unencoded) dsm[...] bracket syntax
-// are reproduced exactly as confirmed against the live site. Only the revenue
-// bounds (from the current band) and `p` vary.
+// are reproduced exactly as confirmed against the live site. What varies is the
+// activity code `at=`, the revenue slot, and `p`.
 
 const cfg = $('Config').first().json;
 const state = $input.first().json;
 const sd = $getWorkflowStaticData('global');
 
-const band = sd.bands[state.bandIndex];
+const segment = sd.segments[state.segmentIndex];
 
-const url = buildSearchUrl(
-  { ...cfg, revenueFrom: band.from, revenueTo: band.to },
-  state.page
-);
+const url = buildSearchUrl({ ...cfg, ...segment }, state.page);
 
-return [{ json: { ...state, band, searchUrl: url } }];
+return [{ json: { ...state, segment, segmentLabel: describeSegment(segment), searchUrl: url } }];

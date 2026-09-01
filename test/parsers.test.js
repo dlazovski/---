@@ -303,7 +303,7 @@ test('parseSearchResults / parseProfile surface blocks instead of throwing', () 
 // ---------------------------------------------------------------------------
 
 test('buildSearchUrl: reproduces the confirmed URL exactly, with p appended', () => {
-  const url = P.buildSearchUrl({ revenueFrom: 5000000, revenueTo: 400000000, balanceYear: 2025 }, 1);
+  const url = P.buildSearchUrl({ revenueFrom: 5000000, revenueTo: 400000000, balanceYear: 2025, revenueFilterMode: 'range' }, 1);
   assert.strictEqual(
     url,
     'https://www.companywall.com.mk/prebaruvanje?cr=MKD&n=&mv=&r=&c=&cp=&at=&area=&subarea=&sbjact=t' +
@@ -314,7 +314,7 @@ test('buildSearchUrl: reproduces the confirmed URL exactly, with p appended', ()
 });
 
 test('buildSearchUrl: page number is the only thing that changes between pages', () => {
-  const cfg = { revenueFrom: 5000000, revenueTo: 400000000, balanceYear: 2025 };
+  const cfg = { revenueFrom: 5000000, revenueTo: 400000000, balanceYear: 2025, revenueFilterMode: 'range' };
   assert.strictEqual(P.buildSearchUrl(cfg, 1).replace('&p=1', '&p=2'), P.buildSearchUrl(cfg, 2));
 });
 
@@ -348,4 +348,106 @@ test('regression: Cyrillic labels are matched despite JS \\b not working on them
   assert.strictEqual(P.extractEdb('ЕДБ\n4027015512345'), '4027015512345');
   // ...and the boundary still does its job: ЕМБС must not match inside a word.
   assert.strictEqual(P.extractEmbs('ХЕМБСКИ 7145263'), '');
+});
+
+
+// ---------------------------------------------------------------------------
+// НКД activity filter and search segments
+// ---------------------------------------------------------------------------
+
+test('buildSearchUrl: the НКД code is sent as at=', () => {
+  const url = P.buildSearchUrl({ activityType: '46', revenueFilterMode: 'off-zero' }, 1);
+  assert.match(url, /[?&]at=46&/);
+});
+
+test('buildSearchUrl: off-zero keeps the revenue slot but unfiltered, mirroring dsm[1]', () => {
+  const url = P.buildSearchUrl({ activityType: '46', revenueFilterMode: 'off-zero' }, 1);
+  assert.match(url, /dsm\[0\]\.Code=201&dsm\[0\]\.From=0&dsm\[0\]\.To=0/);
+  // The site's own "unfiltered slot" form, for comparison.
+  assert.match(url, /dsm\[1\]\.Code=48&dsm\[1\]\.From=0&dsm\[1\]\.To=0/);
+});
+
+test('buildSearchUrl: off-omit drops the revenue triplet entirely', () => {
+  const url = P.buildSearchUrl({ activityType: '46', revenueFilterMode: 'off-omit' }, 1);
+  assert.ok(!url.includes('dsm[0]'), 'dsm[0] should be absent: ' + url);
+  assert.match(url, /dsm\[1\]\.Code=48/);
+});
+
+test('buildSearchUrl: neither "off" mode carries a revenue bound', () => {
+  for (const mode of ['off-zero', 'off-omit']) {
+    const url = P.buildSearchUrl({ activityType: '46', revenueFrom: 5000000, revenueTo: 400000000, revenueFilterMode: mode }, 1);
+    assert.ok(!url.includes('5000000'), mode + ' leaked revenueFrom into the URL');
+    assert.ok(!url.includes('400000000'), mode + ' leaked revenueTo into the URL');
+  }
+});
+
+test('parseNkdCodes: accepts comma, semicolon, space and newline separated lists', () => {
+  assert.deepStrictEqual(P.parseNkdCodes('46'), ['46']);
+  assert.deepStrictEqual(P.parseNkdCodes('46, 47'), ['46', '47']);
+  assert.deepStrictEqual(P.parseNkdCodes('46.900; 47.110\n10'), ['46.900', '47.110', '10']);
+  assert.deepStrictEqual(P.parseNkdCodes(''), []);
+  assert.deepStrictEqual(P.parseNkdCodes(null), []);
+});
+
+test('nkdMatchesFilter: a division matches every code beneath it', () => {
+  assert.strictEqual(P.nkdMatchesFilter('46.900', '46'), true);
+  assert.strictEqual(P.nkdMatchesFilter('46.110', '46'), true);
+  assert.strictEqual(P.nkdMatchesFilter('47.110', '46'), false);
+});
+
+test('nkdMatchesFilter: a division does not match a longer division that starts the same', () => {
+  // Guards against "4" matching "46.900", or "46" matching a hypothetical "460.x".
+  assert.strictEqual(P.nkdMatchesFilter('460.10', '46'), false);
+  assert.strictEqual(P.nkdMatchesFilter('46.900', '4'), false);
+});
+
+test('nkdMatchesFilter: a full code matches itself', () => {
+  assert.strictEqual(P.nkdMatchesFilter('46.900', '46.900'), true);
+  assert.strictEqual(P.nkdMatchesFilter('46.901', '46.900'), false);
+});
+
+test('nkdMatchesFilter: an unknown code returns null, not false', () => {
+  // "could not tell" must be distinguishable from "does not match", or companies
+  // whose НКД failed to parse would be silently dropped.
+  assert.strictEqual(P.nkdMatchesFilter('', '46'), null);
+  assert.strictEqual(P.nkdMatchesFilter(null, '46'), null);
+});
+
+test('nkdMatchesFilter: no filter means everything matches', () => {
+  assert.strictEqual(P.nkdMatchesFilter('46.900', ''), true);
+  assert.strictEqual(P.nkdMatchesFilter('', ''), true);
+});
+
+test('buildSearchSegments: one segment per НКД code when revenue filtering is off', () => {
+  const segments = P.buildSearchSegments({ nkdCodes: '46, 47', revenueFilterMode: 'off-zero' });
+  assert.strictEqual(segments.length, 2);
+  assert.deepStrictEqual(segments.map((s) => s.activityType), ['46', '47']);
+  assert.ok(segments.every((s) => s.revenueFrom === undefined && s.revenueTo === undefined));
+});
+
+test('buildSearchSegments: codes multiply with revenue bands when both are configured', () => {
+  const segments = P.buildSearchSegments({
+    nkdCodes: '46, 47', revenueFilterMode: 'range',
+    revenueFrom: 5000000, revenueTo: 400000000, revenueBandCount: 4
+  });
+  assert.strictEqual(segments.length, 8);
+  assert.strictEqual(segments[0].activityType, '46');
+  assert.strictEqual(segments[0].revenueFrom, 5000000);
+  assert.strictEqual(segments[segments.length - 1].activityType, '47');
+  assert.strictEqual(segments[segments.length - 1].revenueTo, 400000000);
+});
+
+test('buildSearchSegments: no codes and no banding is a single plain search', () => {
+  const segments = P.buildSearchSegments({ nkdCodes: '', revenueFilterMode: 'off-zero' });
+  assert.strictEqual(segments.length, 1);
+  assert.strictEqual(segments[0].activityType, '');
+});
+
+test('describeSegment: reads as something a human can scan in a log', () => {
+  assert.strictEqual(P.describeSegment({ activityType: '46' }), 'НКД 46, any revenue');
+  assert.strictEqual(
+    P.describeSegment({ activityType: '46', revenueFrom: 1, revenueTo: 2 }),
+    'НКД 46, revenue 1–2'
+  );
+  assert.strictEqual(P.describeSegment({ activityType: '' }), 'all activities, any revenue');
 });
