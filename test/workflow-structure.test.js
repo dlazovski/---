@@ -291,3 +291,35 @@ for (const [label, wf] of Object.entries(WORKFLOWS)) {
     }
   });
 }
+
+// --- Google Sheets rate limiting --------------------------------------------
+
+test('[main] both Google Sheets nodes retry, because 429 is transient', () => {
+  const sheets = WORKFLOWS.main.nodes.filter((n) => n.type === 'n8n-nodes-base.googleSheets');
+  assert.strictEqual(sheets.length, 2);
+  for (const node of sheets) {
+    assert.strictEqual(node.retryOnFail, true, node.name + ' does not retry');
+    assert.ok(node.maxTries >= 3, node.name + ' gives up too early');
+    assert.ok(node.waitBetweenTries >= 3000, node.name + ' retries too fast to clear a rate limit');
+  }
+});
+
+test('[main] a failed append continues the run, but a failed read must not', () => {
+  const sheets = WORKFLOWS.main.nodes.filter((n) => n.type === 'n8n-nodes-base.googleSheets');
+  const read = sheets.find((n) => n.parameters.operation === 'read');
+  const append = sheets.find((n) => n.parameters.operation === 'append');
+
+  assert.strictEqual(append.onError, 'continueRegularOutput',
+    'one rejected row should not end a run of hundreds');
+  assert.notStrictEqual(read.onError, 'continueRegularOutput',
+    'continuing past a failed read would append everything the sheet already holds');
+});
+
+test('[main] every append is checked, so a silent write failure cannot happen', () => {
+  const wf = WORKFLOWS.main;
+  const append = wf.nodes.find((n) => n.type === 'n8n-nodes-base.googleSheets'
+    && n.parameters.operation === 'append');
+  const downstream = (edges(wf)[append.name] || []);
+  assert.deepStrictEqual(downstream, ['Confirm Row Written'],
+    'the append must feed the check that counts rejected writes');
+});

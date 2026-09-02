@@ -63,6 +63,7 @@ module.exports = function buildMainWorkflow() {
     B.ifBooleanNode('Write Row?', '={{ $json._write }}', 'true', [3420, 780]),
     B.codeNode('Prepare Sheet Row', 'prepare-sheet-row.js', [3640, 700]),
     B.googleSheetsAppendNode('Google Sheets — Append', [3860, 700]),
+    B.codeNode('Confirm Row Written', 'confirm-row-written.js', [4080, 700]),
 
     // --- summary ---
     B.codeNode('Build Summary', 'build-summary.js', [2100, 360]),
@@ -179,7 +180,8 @@ module.exports = function buildMainWorkflow() {
     // false = profile fetch failed and partial rows are disabled: skip, keep looping
     'Write Row?': [[{ node: 'Prepare Sheet Row' }], [{ node: 'Loop Over Companies' }]],
     'Prepare Sheet Row': [[{ node: 'Google Sheets — Append' }]],
-    'Google Sheets — Append': [[{ node: 'Loop Over Companies' }]],
+    'Google Sheets — Append': [[{ node: 'Confirm Row Written' }]],
+    'Confirm Row Written': [[{ node: 'Loop Over Companies' }]],
 
     'Build Summary': [[{ node: 'Run Summary' }]]
   });

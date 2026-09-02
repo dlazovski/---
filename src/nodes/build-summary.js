@@ -52,6 +52,8 @@ const summary = {
   licaFetchFailures: stats.licaFailures || 0,
 
   newRowsWrittenToSheet: stats.rowsWritten || 0,
+  sheetWriteFailures: stats.sheetWriteFailures || 0,
+  failedSheetWrites: stats.failedSheetWrites || [],
   rowsSkipped: stats.rowsSkipped || 0,
   companiesWithNoPhone: stats.noPhone || 0,
   companiesWithNoEmail: stats.noEmail || 0,
@@ -92,6 +94,14 @@ if (nkdCodes.length > 0 && nkdChecked >= 5 && summary.companiesNotMatchingNkdFil
     + 'the requested НКД code(s) ' + nkdCodes.join(', ') + '. The `at=` search parameter is most likely '
     + 'being ignored by the site, so the search was effectively unfiltered. Verify the parameter with the '
     + 'Step 0 workflow before trusting this run.';
+}
+
+// Rows that never reached the sheet, after every retry.
+if ((stats.sheetWriteFailures || 0) > 0) {
+  summary.sheetWriteWarning = stats.sheetWriteFailures + ' row(s) could not be written to the sheet '
+    + 'even after retries — most likely Google rate limiting (HTTP 429). Those companies are listed '
+    + 'in failedSheetWrites. Simply re-run: the sheet de-duplication skips everything already '
+    + 'written and will pick these up.';
 }
 
 // A value was extracted but had no column to go in — the row lands looking fine

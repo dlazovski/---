@@ -142,7 +142,16 @@ function runWorkflow(options) {
     if (!record[0].json._write) continue;
 
     const rows = runCode('Prepare Sheet Row', { input: record, nodes, staticData });
-    rows.forEach((r) => sheetRows.push(r.json));
+    nodes['Prepare Sheet Row'] = rows;
+
+    // The append node continues on error, so a rejected write arrives here as an
+    // item carrying `error` rather than aborting the run.
+    const appendResult = opts.failSheetWrites
+      ? [{ json: { error: 'HTTP 429 Too Many Requests' } }]
+      : rows;
+    runCode('Confirm Row Written', { input: appendResult, nodes, staticData });
+
+    if (!opts.failSheetWrites) rows.forEach((r) => sheetRows.push(r.json));
   }
 
   const summary = runCode('Build Summary', { input: [], nodes, staticData })[0].json;
@@ -575,4 +584,31 @@ test('diagnostics: a field that extracted fine produces no noise', () => {
   const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
   // Both fixture profiles carry an НКЗ, so nothing should be sampled.
   assert.deepStrictEqual(run.summary.emptyFieldDiagnostics.activity, []);
+});
+
+// ---------------------------------------------------------------------------
+// Google rate limiting on the sheet write
+// ---------------------------------------------------------------------------
+
+test('sheet writes: a rejected append is counted, not reported as written', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' }, failSheetWrites: true });
+  assert.strictEqual(run.summary.sheetWriteFailures, 2, 'both rows should be recorded as failed');
+  assert.strictEqual(run.summary.newRowsWrittenToSheet, 0,
+    'a row that never reached the sheet must not be counted as written');
+});
+
+test('sheet writes: the failures name the companies, so a re-run can be reasoned about', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' }, failSheetWrites: true });
+  const names = run.summary.failedSheetWrites.map((f) => f.company);
+  assert.ok(names.includes('МАКИТЕЛ ДООЕЛ'), 'failed write did not name the company');
+  assert.match(run.summary.failedSheetWrites[0].reason, /429/);
+  assert.match(run.summary.sheetWriteWarning || '', /re-run/);
+});
+
+test('sheet writes: a successful append leaves no failure noise', () => {
+  const run = runWorkflow({ existingRows: [], config: { nkdCodes: '' } });
+  assert.strictEqual(run.summary.sheetWriteFailures, 0);
+  assert.deepStrictEqual(run.summary.failedSheetWrites, []);
+  assert.strictEqual(run.summary.sheetWriteWarning, undefined);
+  assert.strictEqual(run.summary.newRowsWrittenToSheet, run.sheetRows.length);
 });

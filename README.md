@@ -300,7 +300,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   170 tests: parser units, end-to-end simulation, structural checks.
+test/                   176 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -310,7 +310,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 170 tests, no network access needed
+npm test        # 176 tests, no network access needed
 npm run check   # both
 ```
 
@@ -342,6 +342,27 @@ npm run check   # both
 > valuable follow-up.
 
 ---
+
+## If Google Sheets returns "too many requests"
+
+A 429 from Google is transient, and the fix is retrying — not slowing the scrape down.
+Raising the profile Wait node would throttle every CompanyWall request (which are fine)
+to work around a Google limit, and it still would not survive a burst.
+
+Both Google Sheets nodes retry up to **5 times with a 5-second gap**. The append also
+continues on error, so one rejected row cannot end a run of hundreds; the row is simply
+not written, and the next run's de-duplication picks that company up again.
+
+Check the summary afterwards:
+
+- **`sheetWriteFailures`** and **`failedSheetWrites`** — rows that never landed, with the
+  company and the reason. **`sheetWriteWarning`** appears when there are any.
+- Those companies are absent from the sheet, so **re-running collects them** and skips
+  everything already there.
+
+At batch size 1 with a 3–5 s wait, the workflow appends roughly 4–10 rows per minute,
+well inside Google's 60 writes/minute. Persistent 429s at that rate usually mean the
+Google credential's quota is shared with something else in the same project.
 
 ## If a column comes out blank
 

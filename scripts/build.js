@@ -168,7 +168,14 @@ function googleSheetsAppendNode(name, position) {
       columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: [], schema: [] },
       options: {}
     },
-    id: name, name, type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position
+    id: name, name, type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position,
+    // Google returns 429 on write bursts. Retry with a gap; if it still fails,
+    // carry on rather than losing the whole run — the row is simply not written,
+    // and the next run's sheet de-duplication will pick that company up again.
+    retryOnFail: true,
+    maxTries: 5,
+    waitBetweenTries: 5000,
+    onError: 'continueRegularOutput'
   };
 }
 
@@ -189,7 +196,13 @@ function googleSheetsReadNode(name, position) {
       options: {}
     },
     id: name, name, type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position,
-    alwaysOutputData: true
+    alwaysOutputData: true,
+    // A 429 here is transient. Retry rather than failing the run — but never
+    // continue past a failed read: de-duplication would be blind and the run
+    // would append everything the sheet already holds.
+    retryOnFail: true,
+    maxTries: 5,
+    waitBetweenTries: 5000
   };
 }
 

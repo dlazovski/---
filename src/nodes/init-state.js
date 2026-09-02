@@ -41,6 +41,8 @@ sd.stats = {
   noEmail: 0,
   noContactPerson: 0,
   rowsWritten: 0,
+  sheetWriteFailures: 0,
+  failedSheetWrites: [],
   rowsSkipped: 0,
   failedUrls: [],
   warnings: [],
