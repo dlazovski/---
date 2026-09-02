@@ -48,7 +48,8 @@ sd.stats = {
   sheetColumnMap: {},
   sheetColumnsUnmatched: [],
   columnsWithDataButNoHeader: [],
-  fieldDiagnostics: { activity: [], contactPerson: [], phone: [], email: [] }
+  fieldDiagnostics: { activity: [], contactPerson: [], phone: [], email: [] },
+  fieldSourceCounts: {}
 };
 sd.collected = [];
 sd.seenKeys = {};

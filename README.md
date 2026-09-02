@@ -300,7 +300,7 @@ src/lib/parsers.js      All HTML parsing. Dependency-free; the single source of 
 src/nodes/*.js          One file per n8n Code node.
 scripts/build.js        Inlines the library into each Code node, emits the workflow JSON.
 workflows/*.json        Generated — import these into n8n.
-test/                   166 tests: parser units, end-to-end simulation, structural checks.
+test/                   170 tests: parser units, end-to-end simulation, structural checks.
 docs/                   Step 0 instructions.
 ```
 
@@ -310,7 +310,7 @@ node at build time. The generated files carry a "do not edit here" banner: chang
 
 ```bash
 npm run build   # regenerate workflows/*.json
-npm test        # 166 tests, no network access needed
+npm test        # 170 tests, no network access needed
 npm run check   # both
 ```
 
@@ -365,6 +365,32 @@ says so in the warnings.
 holds up to five samples per field — company, profile URL, and 400 characters of real page
 text around the label the value should have been near. That is usually enough to see whether
 the page lacks the data or the parser missed it, without another live run.
+
+### Blank phone and e-mail are often correct
+
+Many CompanyWall companies list no phone or e-mail at all — the brief flagged this from the
+outset, and the sheet leaves those cells blank rather than failing the row. The largest
+companies almost always have contacts; small ones frequently do not. `companiesWithNoPhone`
+and `companiesWithNoEmail` in the summary give the counts.
+
+A blank **Контакт лице** is different: owners and managers come from the company register,
+so it should almost always be present. If many rows lack one, check
+`emptyFieldDiagnostics.contactPerson`.
+
+### Where each field was found
+
+`fieldSourceCounts` in the summary breaks down which pass produced each field:
+
+| Source | Meaning |
+| --- | --- |
+| `Контакти` | Found in a recognised contact section — the tightest, most reliable match |
+| `whole page (Контакти empty)` | No contact section identified; found elsewhere on the page |
+| `whole page including chrome (last resort)` | Found only after searching the header/footer/nav that are normally stripped |
+| `none` | Not on the page |
+
+A high **last resort** count means the layout puts contact details inside an element that
+would otherwise be discarded. It is safe — the site's own number is excluded by name and its
+e-mail by domain — but it is a signal the tighter passes are not matching that layout.
 
 ### Note on НКЗ codes
 

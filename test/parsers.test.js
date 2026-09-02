@@ -640,3 +640,70 @@ test('normalizeSheetHeader: folds the differences that actually occur', () => {
   assert.strictEqual(n('Контакт  лице'), n('Контакт лице'));
   assert.notStrictEqual(n('ЕМБС'), n('ЕДБ'));
 });
+
+// ---------------------------------------------------------------------------
+// Contact details hidden inside page chrome
+//
+// stripChrome() removes every <footer>, <header> and <nav>, including ones
+// nested inside content cards. On layouts that put contact details in such an
+// element they were deleted before extraction ever ran — a silent, per-layout
+// loss that looks like the company simply having no phone.
+// ---------------------------------------------------------------------------
+
+const CARD_FOOTER_PROFILE =
+  '<!doctype html><html><head><title>ТЕСТ ДОО | CompanyWall</title></head><body>'
+  + '<header><nav><a href="/registracija">Регистрација</a></nav></header>'
+  + '<main><h1>ТЕСТ ДОО</h1>'
+  + '<div><span>ЕМБС</span><span>7145263</span><span>ЕДБ</span><span>4030006614710</span></div>'
+  + '<div>Друштво ТЕСТ ДОО е регистрирана на УЛ 1, ШТИП, ШТИП, Штип, '
+  + 'Република Северна Македонија и работи од 2010.</div>'
+  + '<section><span>НКЗ</span><span>61.100 - Телекомуникации</span></section>'
+  + '<div class="card"><footer>'
+  + '<a href="tel:032612609">032/612-609</a>'
+  + '<a href="mailto:kontakt@test.mk">kontakt@test.mk</a>'
+  + '<span>Сопственик</span><span>ПЕТАР ПЕТРОВСКИ</span>'
+  + '<span>Управител</span><span>ГОРАН СТОЈАНОВ</span>'
+  + '</footer></div>'
+  + '<p>' + 'опис '.repeat(60) + '</p></main>'
+  + '<footer><p>info@companywall.com.mk 075387170</p></footer></body></html>';
+
+test('contacts inside a card footer are still found', () => {
+  const r = P.parseProfile(CARD_FOOTER_PROFILE, { excludePhones: ['075387170'] });
+  assert.deepStrictEqual(r.phones, ['032/612-609']);
+  assert.deepStrictEqual(r.emails, ['kontakt@test.mk']);
+  assert.strictEqual(r.contactPerson, 'ГОРАН СТОЈАНОВ');
+  assert.strictEqual(r.contactPersonRole, 'Управител');
+});
+
+test('widening to the raw page still keeps the site\'s own details out', () => {
+  const r = P.parseProfile(CARD_FOOTER_PROFILE, { excludePhones: ['075387170'] });
+  assert.ok(!r.phones.some((p) => P.normalizePhone(p) === '075387170'), 'site phone leaked');
+  assert.ok(!r.emails.some((e) => e.includes('companywall')), 'site e-mail leaked');
+});
+
+test('the source of each field is reported, so layout variance is visible', () => {
+  const r = P.parseProfile(CARD_FOOTER_PROFILE, { excludePhones: ['075387170'] });
+  assert.match(r.phoneSource, /last resort/);
+  assert.match(r.peopleSource, /last resort/);
+});
+
+test('a company with genuinely no contacts still parses, with blanks', () => {
+  const bare = '<!doctype html><html><head><title>ПРАЗНА ДОО | CompanyWall</title></head><body>'
+    + '<main><h1>ПРАЗНА ДОО</h1>'
+    + '<div><span>ЕМБС</span><span>1112223</span><span>ЕДБ</span><span>4030006614711</span></div>'
+    + '<div>Друштво ПРАЗНА ДОО е регистрирана на УЛ 2, ШТИП, ШТИП, Штип, '
+    + 'Република Северна Македонија и работи од 2011.</div>'
+    + '<section><span>НКЗ</span><span>61.900 - Телекомуникации</span></section>'
+    + '<p>' + 'опис '.repeat(60) + '</p></main>'
+    + '<footer><p>info@companywall.com.mk 075387170</p></footer></body></html>';
+
+  const r = P.parseProfile(bare, { excludePhones: ['075387170'] });
+  assert.deepStrictEqual(r.phones, [], 'invented a phone number');
+  assert.deepStrictEqual(r.emails, [], 'invented an e-mail');
+  assert.strictEqual(r.contactPerson, '');
+  assert.strictEqual(r.needsLica, true, 'should fall back to /lica when nobody is listed');
+  // The rest of the row must still be usable.
+  assert.strictEqual(r.name, 'ПРАЗНА ДОО');
+  assert.strictEqual(r.embs, '1112223');
+  assert.strictEqual(r.activity, '61.900 - Телекомуникации');
+});

@@ -114,6 +114,18 @@ if (!nkdSkip) {
 // label it should have been near. An empty cell otherwise gives no clue whether
 // the page lacks the data or the parser missed it; this makes the difference
 // visible in the run summary without another live run.
+function countSource(bucket, value) {
+  const counts = stats.fieldSourceCounts[bucket] || (stats.fieldSourceCounts[bucket] = {});
+  const key = value || 'none';
+  counts[key] = (counts[key] || 0) + 1;
+}
+
+if (!nkdSkip) {
+  countSource('phone', parsed.phoneSource);
+  countSource('email', parsed.emailSource);
+  countSource('people', parsed.peopleSource);
+}
+
 const diagnostics = stats.fieldDiagnostics;
 const SAMPLE_LIMIT = Number(cfg.diagnosticSamples) || 5;
 

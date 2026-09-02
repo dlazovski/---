@@ -66,6 +66,10 @@ const summary = {
   // diagnosed without another live run.
   emptyFieldDiagnostics: stats.fieldDiagnostics || {},
 
+  // Which part of the page each field was found in. A high "last resort" count
+  // means the contact block sits somewhere the tighter passes do not reach.
+  fieldSourceCounts: stats.fieldSourceCounts || {},
+
   totalFailures: failures.length,
   failuresByStage: failures.reduce((acc, f) => {
     acc[f.stage] = (acc[f.stage] || 0) + 1;

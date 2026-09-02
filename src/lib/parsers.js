@@ -656,13 +656,18 @@ function captureLabelContext(source, labelAlternation, chars) {
 function sliceContactsSection(html) {
   var body = stripChrome(html);
   var candidates = [];
-  var re = /Контакти/g;
+  // "Контакти" appeared on none of the profiles probed live, so the section is
+  // located by any of the labels that plausibly head a contact block. Longest
+  // alternatives first, so the more specific label wins at a given position.
+  var re = /Контакти|Контакт|Телефон|Е-пошта|Емаил|Мејл|Меил/g;
   var m;
-  while ((m = re.exec(body)) !== null) {
+  var seen = 0;
+  while ((m = re.exec(body)) !== null && seen < 12) {
+    seen += 1;
     var from = m.index;
     var bounded = body.length;
     for (var i = 0; i < SECTION_END_LABELS.length; i++) {
-      var idx = body.indexOf(SECTION_END_LABELS[i], from + 'Контакти'.length);
+      var idx = body.indexOf(SECTION_END_LABELS[i], from + m[0].length);
       if (idx !== -1 && idx < bounded) bounded = idx;
     }
     candidates.push(body.slice(from, Math.min(bounded, from + 15000)));
@@ -922,26 +927,46 @@ function parseProfile(html, options) {
   var phoneOpts = { exclude: opts.excludePhones || [] };
   var emailOpts = { exclude: opts.excludeEmails || [] };
 
-  var phones = extractPhones(contacts, phoneOpts);
+  // Three widening passes: the contact section, then the page with chrome removed,
+  // then the untouched HTML.
+  //
+  // The last resort matters because stripChrome() deletes every <footer>, <header>
+  // and <nav> — including ones nested inside content cards. On layouts that put
+  // contact details in such an element, the data is removed before extraction. It
+  // is safe to widen: the site's own number is excluded by name and its e-mail by
+  // domain, so scanning the chrome cannot introduce them.
   var phoneSource = 'Контакти';
+  var phones = extractPhones(contacts, phoneOpts);
   if (!phones.length) {
     // Confirmed fallback: numbers are often repeated in the free-text description.
     phones = extractPhones(body, phoneOpts);
     phoneSource = phones.length ? 'whole page (Контакти empty)' : 'none';
   }
+  if (!phones.length) {
+    phones = extractPhones(html, phoneOpts);
+    phoneSource = phones.length ? 'whole page including chrome (last resort)' : 'none';
+  }
 
-  var emails = extractEmails(contacts, emailOpts);
   var emailSource = 'Контакти';
+  var emails = extractEmails(contacts, emailOpts);
   if (!emails.length) {
     emails = extractEmails(body, emailOpts);
     emailSource = emails.length ? 'whole page (Контакти empty)' : 'none';
   }
+  if (!emails.length) {
+    emails = extractEmails(html, emailOpts);
+    emailSource = emails.length ? 'whole page including chrome (last resort)' : 'none';
+  }
 
-  var people = extractPeople(contacts);
   var peopleSource = 'Контакти';
+  var people = extractPeople(contacts);
   if (!people.length) {
     people = extractPeople(body);
     peopleSource = people.length ? 'whole page (Контакти empty)' : 'none';
+  }
+  if (!people.length) {
+    people = extractPeople(html);
+    peopleSource = people.length ? 'whole page including chrome (last resort)' : 'none';
   }
 
   var picked = pickContactPerson(people);
